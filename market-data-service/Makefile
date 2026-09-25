@@ -5,8 +5,10 @@ API_URL      := http://localhost:$(or $(API_PORT),8000)
 # Redis, kafka and postgres are shared with other services and live in ../infra.
 INFRA        := $(MAKE) --no-print-directory -C ../infra
 REDIS_CLI    := docker compose -f ../infra/docker-compose.yml exec -T redis redis-cli
+# Must match CACHE_KEY_PREFIX, SYMBOLS_KEY and TICKER_TOPIC in src/delta_ticker/config.py.
 CACHE_PREFIX := ticker:latest:
 SYMBOLS_KEY  := ticker:symbols
+TICKER_TOPIC := market-data.ticker
 
 # Rancher Desktop exposes Docker on ~/.rd/docker.sock when it can't use /var/run/docker.sock.
 ifeq ($(DOCKER_HOST),)
@@ -22,6 +24,7 @@ endif
         deps-start deps-stop deps-restart deps-status deps-logs \
         ticker-build ticker-start ticker-stop ticker-restart ticker-status ticker-logs ticker-run \
         api-start api-stop api-restart api-status api-logs api-docs \
+        kafka-tail kafka-describe \
         cache-show cache-get \
         symbols-show symbols-add symbols-remove symbols-set symbols-clear
 
@@ -109,6 +112,14 @@ api-logs: ## Follow symbols API logs
 
 api-docs: ## Open the interactive API docs in a browser
 	open $(API_URL)/docs
+
+## --- Kafka (topic market-data.ticker, in the shared infra) ---
+
+kafka-tail: ## Print ticker updates as they arrive on Kafka, key and value (Ctrl+C to stop)
+	@$(INFRA) topic-tail TOPIC=$(TICKER_TOPIC)
+
+kafka-describe: ## Show the ticker topic's partitions and config
+	@$(INFRA) topic-describe TOPIC=$(TICKER_TOPIC)
 
 ## --- Cache (redis) ---
 

@@ -28,8 +28,6 @@ class DeltaTickerClient:
 
     @staticmethod
     def print_payload(payload: TickerPayload):
-        # Swap this for a Kafka producer later, e.g.
-        # producer.produce("market-data.ticker", key=payload.key(), value=payload.to_json())
         print(payload.to_json().decode("utf-8"))
 
     def run(self):

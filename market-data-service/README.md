@@ -1,17 +1,21 @@
 # market-data-service
 
-Streams live option tickers from [Delta Exchange](https://www.delta.exchange/) over a websocket, converts each update into a Kafka-ready `TickerPayload`, and caches the latest payload per symbol in Redis with a 10-second TTL.
+Streams live option tickers from [Delta Exchange](https://www.delta.exchange/) over a websocket and converts each update into a `TickerPayload`. Each payload is published to the Kafka topic `market-data.ticker` (keyed by symbol), cached in Redis as the latest value per symbol with a 10-second TTL, and printed to stdout.
 
 The symbols to subscribe to are also kept in Redis, and a FastAPI service manages them over HTTP. The ticker re-reads them every 30 seconds, so you can add or remove symbols without restarting anything.
 
-Everything runs in Docker and is driven by `make`. Redis comes from the shared infra stack in [`../infra`](../infra/README.md), which also runs Kafka and Postgres for the other services. `make up` starts it if it isn't already running.
+Everything runs in Docker and is driven by `make`. Redis and Kafka come from the shared infra stack in [`../infra`](../infra/README.md), which also runs Postgres for the other services. `make up` starts it if it isn't already running.
 
 ```
 Delta Exchange (wss, v2/ticker)
         │
         ▼
   delta-ticker ──► stdout (JSON, one line per update)
-        │    ▲
+        │    ▲  │
+        │    │  └──► kafka ── market-data.ticker   key = symbol, value = payload JSON
+        │    │                        │
+        │    │                        ▼
+        │    │               consumers (order-service, planned)
   write │    │ read every 30s
         ▼    │
   redis ─────┴── ticker:latest:<symbol>   latest payload, TTL 10s
@@ -75,7 +79,7 @@ delta-ticker   market-data/delta-ticker   "delta-ticker"       Up 5 seconds
 symbols-api    market-data/delta-ticker   "delta-ticker-api"   Up 5 seconds (healthy)   0.0.0.0:8000->8000/tcp
 
 $ make test
-#11 0.980 41 passed in 0.63s
+#11 1.735 49 passed in 0.65s
 ```
 
 `make test` builds the `test` stage of the Dockerfile, so a failing test fails the command.
@@ -109,6 +113,21 @@ These targets run the matching target in [`../infra`](../infra/README.md). Redis
 | `make deps-restart` | Restart the infra containers |
 | `make deps-status` | Show the infra containers |
 | `make deps-logs` | Follow the infra logs |
+
+### Kafka
+
+| Command | Description |
+|---|---|
+| `make kafka-tail` | Print updates as they arrive on `market-data.ticker`, key then value. Ctrl+C to stop |
+| `make kafka-describe` | Show the topic's partitions, leaders and config |
+
+```sh
+$ make kafka-tail
+C-BTC-80000-091026  {"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"time":"2026-09-25T14:26:46.363573+05:30", ... }
+P-BTC-80000-091026  {"symbol":"P-BTC-80000-091026","product_id":153498,"strike_price":80000.0,"time":"2026-09-25T14:26:46.363573+05:30", ... }
+```
+
+`make kafka-tail` shows only new messages. To replay the topic from the start, run `kafka-console-consumer.sh` with `--from-beginning`; see [`../infra`](../infra/README.md).
 
 ### Cache
 
@@ -286,6 +305,7 @@ A healthy ticker logs the symbols it loaded, `Socket opened`, then a subscriptio
 
 ```
 delta-ticker  | Loaded symbols from ticker:symbols: ['C-BTC-79500-250926', 'P-BTC-79500-250926']
+delta-ticker  | Publishing to Kafka topic market-data.ticker
 delta-ticker  | Socket opened
 delta-ticker  | {
 delta-ticker  |   "channels": [
@@ -304,7 +324,15 @@ delta-ticker  | {"symbol":"C-BTC-80000-091026", ... }
 - **Subscriptions message but no JSON lines:** the symbols aren't trading, most likely because they've expired. See [Configuration](#configuration).
 - **An `"error"` in the subscriptions message:** Delta rejected the subscription, for example because of a wrong channel name or an unknown symbol.
 
-### 2. Is the cache being filled?
+### 2. Is it reaching Kafka?
+
+```sh
+make kafka-tail
+```
+
+You should see one line per update, starting with the symbol (the message key). If nothing appears while `make ticker-logs` is streaming, look for `Failed to publish ...` in the ticker logs and check `make deps-status`.
+
+### 3. Is the cache being filled?
 
 ```sh
 make cache-show
@@ -317,7 +345,7 @@ ticker:latest:P-BTC-79500-250926  ttl=10s
 
 Run it a few times. Each symbol's TTL should keep jumping back towards 10s, because every update resets it. If a TTL keeps counting down and the key then disappears, updates for that symbol have stopped.
 
-### 3. Is the cached data fresh?
+### 4. Is the cached data fresh?
 
 ```sh
 make cache-get SYMBOL=C-BTC-80000-091026
@@ -327,7 +355,7 @@ curl localhost:8000/tickers/C-BTC-80000-091026
 
 Compare the payload's `time` field with the current time in IST (`TZ=Asia/Kolkata date`). It should be only a few seconds old.
 
-### 4. Watch the Redis writes live
+### 5. Watch the Redis writes live
 
 ```sh
 docker compose -f ../infra/docker-compose.yml exec redis redis-cli monitor
@@ -345,6 +373,7 @@ export DOCKER_HOST=unix://$HOME/.rd/docker.sock
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
+| `make kafka-tail` shows nothing, ticker logs are streaming | Kafka is down or unreachable. Look for `Failed to publish ...` or `Failed to resolve 'kafka:9092'` in the logs | `make deps-status`, then `make deps-start`. The ticker reconnects on its own; updates older than 30s are dropped, not replayed |
 | `cache empty`, ticker logs are streaming | The ticker can't reach Redis. Look for `Failed to cache ...` in the logs | `make deps-status`, then `make deps-restart` |
 | `cache empty`, no ticker logs | The ticker isn't running | `make status`, then `make ticker-restart` |
 | `cache empty`, `No symbols configured yet` in the logs | The `ticker:symbols` set is empty | `make symbols-add SYMBOLS="..."`, then wait up to 30s |
@@ -363,6 +392,9 @@ export DOCKER_HOST=unix://$HOME/.rd/docker.sock
 | Redis key names | `CACHE_KEY_PREFIX`, `SYMBOLS_KEY` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py). Keep the Makefile's `CACHE_PREFIX` / `SYMBOLS_KEY` in sync | `ticker:latest:`, `ticker:symbols` |
 | Delta websocket URL | `WEBSOCKET_URL` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `wss://socket.india.delta.exchange` |
 | Redis connection | `REDIS_URL` environment variable, read in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `redis://redis:6379/0` in Docker, `redis://localhost:6379/0` otherwise |
+| Kafka connection | `KAFKA_BOOTSTRAP_SERVERS` environment variable, read in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `kafka:9092` in Docker, `localhost:9094` otherwise |
+| Kafka topic | `TICKER_TOPIC` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py). Keep the Makefile's `TICKER_TOPIC` and `TOPICS` in [`../infra/Makefile`](../infra/Makefile) in sync | `market-data.ticker` |
+| Undelivered update timeout | `KAFKA_MESSAGE_TIMEOUT_MS` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py). An update that can't reach Kafka within this time is dropped and logged | `30000` |
 | Accepted symbol format | `OPTION_SYMBOL_PATTERN` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `<C\|P>-<underlying>-<strike>-<DDMMYY>` |
 | Symbols API host port | `API_PORT` environment variable (used by docker-compose and the Makefile) | `8000` |
 | Redis host port | `REDIS_PORT` environment variable, read by [`../infra/docker-compose.yml`](../infra/docker-compose.yml) | `6379` |
@@ -397,7 +429,13 @@ If Redis is unreachable, the ticker logs `Failed to cache <symbol>: ...` and kee
 
 Numbers are floats. Anything Delta doesn't send is `null`.
 
-For Kafka, `TickerPayload.key()` returns the symbol as the message key, which keeps each instrument's updates in order within a partition. `TickerPayload.to_json()` returns the message value.
+## Kafka format
+
+- **Topic:** `market-data.ticker`, 3 partitions, created by [`../infra`](../infra/README.md)
+- **Key:** the symbol (`TickerPayload.key()`). Every update for one instrument goes to the same partition, so consumers see it in order.
+- **Value:** the payload as compact JSON (`TickerPayload.to_json()`), the same bytes that are cached in Redis. See [Payload fields](#payload-fields).
+
+The producer is idempotent, so its retries don't duplicate or reorder messages. Sends are asynchronous and batched for up to 5 ms. If Kafka is unreachable, updates wait in memory and are dropped with `Failed to publish <symbol> to market-data.ticker: ... Message timed out` after 30 seconds. Stdout and the Redis cache keep working while that happens, and the producer reconnects on its own when Kafka comes back.
 
 ## Project layout
 
@@ -413,10 +451,12 @@ market-data-service/
 │   ├── config.py            # constants: URLs, Redis keys, TTL, refresh interval, symbol format, API port
 │   ├── client.py            # DeltaTickerClient: websocket subscribe/unsubscribe + parse
 │   ├── payload.py           # TickerPayload: Kafka-ready record
+│   ├── publisher.py         # TickerPublisher: every payload to Kafka, keyed by symbol
 │   ├── cache.py             # TickerCache: latest payload per symbol in Redis
 │   └── symbols.py           # SymbolRegistry (symbol set CRUD) + SymbolRefresher (re-read every 30s)
 ├── tests/
 │   ├── test_payload.py
+│   ├── test_publisher.py
 │   ├── test_cache.py
 │   ├── test_symbols.py
 │   └── test_api.py
@@ -432,6 +472,6 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest
 make deps-start                          # the shared infra (Redis etc.) still runs in Docker
-delta-ticker                             # connects to redis://localhost:6379/0
+delta-ticker                             # connects to redis://localhost:6379/0 and Kafka on localhost:9094
 delta-ticker-api                         # in another terminal; serves on :8000 (stop the symbols-api container first)
 ```

@@ -1,4 +1,4 @@
-# Redis (and kafka, postgres) run in the shared infra stack: ../infra/docker-compose.yml.
+# Redis and kafka (and postgres) run in the shared infra stack: ../infra/docker-compose.yml.
 # Start it first (`make up` does); these containers reach it over the `portfolio` network.
 services:
   delta-ticker:
@@ -12,6 +12,7 @@ services:
     init: true
     environment:
       REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
 
   symbols-api:
     # Same image as the ticker, different command.

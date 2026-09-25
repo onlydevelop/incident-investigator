@@ -5,11 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "delta-ticker"
 version = "0.1.0"
-description = "Streams Delta Exchange v2/ticker updates as Kafka-ready payloads"
+description = "Streams Delta Exchange v2/ticker updates to Kafka and Redis"
 requires-python = ">=3.11"
 dependencies = [
     "websocket-client>=1.9,<2",
     "redis>=6,<9",
+    "confluent-kafka>=2.6,<3",
     "fastapi>=0.115,<1",
     "uvicorn>=0.30,<1",
 ]

@@ -10,6 +10,14 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 CACHE_KEY_PREFIX = "ticker:latest:"
 CACHE_TTL_SECONDS = 10
 
+# Kafka: every update is published to TICKER_TOPIC, keyed by symbol.
+# Set to kafka:9092 by docker-compose; localhost:9094 is the broker's host listener.
+# The topic is created by ../infra (TOPICS in its Makefile); keep the name in sync.
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9094")
+TICKER_TOPIC = "market-data.ticker"
+# Drop an undelivered update after this long; a stale tick is worse than none.
+KAFKA_MESSAGE_TIMEOUT_MS = 30_000
+
 # Redis set of symbols to subscribe to (no expiry), re-read every SYMBOL_REFRESH_SECONDS.
 # The Makefile's CACHE_PREFIX and SYMBOLS_KEY must match these keys.
 SYMBOLS_KEY = "ticker:symbols"
