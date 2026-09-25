@@ -15,7 +15,9 @@ services:
       retries: 10
 
   delta-ticker:
-    build: .
+    build:
+      context: .
+      target: runtime
     image: market-data/delta-ticker
     container_name: delta-ticker
     restart: unless-stopped
