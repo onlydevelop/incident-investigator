@@ -34,3 +34,16 @@ class TickerCache:
     def get(self, symbol: str) -> Optional[bytes]:
         """Latest payload JSON for `symbol`, or None if nothing arrived within the TTL."""
         return self.client.get(self.key_for(symbol))
+
+    def load(self, symbol: str) -> Optional[TickerPayload]:
+        raw = self.get(symbol)
+        return TickerPayload.from_json(raw) if raw is not None else None
+
+    def load_all(self) -> list[TickerPayload]:
+        """Latest payload for every cached symbol, sorted by symbol.
+        Uses SCAN rather than KEYS so a large keyspace doesn't block Redis."""
+        keys = sorted(self.client.scan_iter(match=f"{self.KEY_PREFIX}*", count=500))
+        if not keys:
+            return []
+        # A key can expire between SCAN and MGET; those come back as None.
+        return [TickerPayload.from_json(raw) for raw in self.client.mget(keys) if raw is not None]

@@ -73,7 +73,7 @@ market-data-redis   redis:8                    "docker-entrypoint…" Up 11 seco
 symbols-api         market-data/delta-ticker   "delta-ticker-api"   Up 5 seconds (healthy)    0.0.0.0:8000->8000/tcp
 
 $ make test
-#11 0.936 29 passed in 0.54s
+#11 1.012 35 passed in 0.65s
 ```
 
 `make test` builds the `test` stage of the Dockerfile, so a failing test fails the command.
@@ -178,7 +178,7 @@ The ticker and the API share one image. `make ticker-restart` rebuilds it but on
 
 ## Symbols API
 
-A FastAPI service for creating, reading, updating and deleting the subscribed option symbols. It runs in the `symbols-api` container on `http://localhost:8000`. Interactive docs are at [`/docs`](http://localhost:8000/docs) and the OpenAPI schema is at `/openapi.json`.
+A FastAPI service for creating, reading, updating and deleting the subscribed option symbols, and for reading the latest cached tickers (see [Tickers](#tickers)). It runs in the `symbols-api` container on `http://localhost:8000`. Interactive docs are at [`/docs`](http://localhost:8000/docs) and the OpenAPI schema is at `/openapi.json`.
 
 Writes go to the `ticker:symbols` Redis set. The ticker applies them on its next refresh, within 30 seconds.
 
@@ -246,6 +246,30 @@ Once a change is applied, the ticker logs it:
 delta-ticker  | Symbols changed: +['C-BTC-80000-091026', 'P-BTC-80000-091026'] -['C-BTC-79500-250926', 'P-BTC-79500-250926']
 ```
 
+### Tickers
+
+Read-only access to the latest payload per symbol, straight from the Redis cache.
+
+| Method | Path | Success | Errors |
+|---|---|---|---|
+| `GET` | `/tickers` | `200` every cached ticker, sorted by symbol, with a `count` | `503` Redis unavailable |
+| `GET` | `/tickers/{symbol}` | `200` the latest payload for that symbol | `404` no update in the last 10s, `503` Redis unavailable |
+
+Each ticker has the fields listed in [Payload fields](#payload-fields). A symbol only appears if it updated within the cache TTL (10 seconds). A subscribed symbol that has stopped trading, or one added less than about 30 seconds ago, won't be listed yet. `/tickers/` with a trailing slash redirects to `/tickers`, so use `curl -L` if you include the slash.
+
+```sh
+$ curl localhost:8000/tickers
+{"tickers":[{"source":"delta.exchange","symbol":"C-BTC-80000-091026","product_id":153512,"contract_type":"call_options","underlying":"BTC","strike_price":80000.0,"timestamp_us":1790324460123456,"spot_price":83950.1,"mark_price":4909.38632822, ...},
+            {"source":"delta.exchange","symbol":"P-BTC-80000-091026", ... ,"mark_price":745.7730827, ...}],
+ "count":2}
+
+$ curl localhost:8000/tickers/C-BTC-80000-091026
+{"source":"delta.exchange","symbol":"C-BTC-80000-091026","product_id":153512,"contract_type":"call_options", ... }
+
+$ curl -w ' (%{http_code})\n' localhost:8000/tickers/C-BTC-84000-091026
+{"detail":"No ticker for C-BTC-84000-091026 in the last 10s"} (404)
+```
+
 ## Checking that it works
 
 ### 1. Is data being fetched?
@@ -292,7 +316,9 @@ Run it a few times. Each symbol's TTL should keep jumping back towards 10s, beca
 ### 3. Is the cached data fresh?
 
 ```sh
-make cache-get SYMBOL=C-BTC-79500-250926
+make cache-get SYMBOL=C-BTC-80000-091026
+# or, through the API
+curl localhost:8000/tickers/C-BTC-80000-091026
 ```
 
 Compare the payload's `timestamp_us` field (microseconds since the epoch) with the current time. It should be only a few seconds old.
@@ -377,7 +403,7 @@ market-data-service/
 ├── pyproject.toml           # package metadata, dependencies, `delta-ticker` and `delta-ticker-api` commands
 ├── src/delta_ticker/
 │   ├── __main__.py          # ticker entry point: wiring
-│   ├── api.py               # symbols API (FastAPI) + its entry point
+│   ├── api.py               # FastAPI: /symbols CRUD, /tickers read-only, entry point
 │   ├── config.py            # constants: URLs, Redis keys, TTL, refresh interval, symbol format, API port
 │   ├── client.py            # DeltaTickerClient: websocket subscribe/unsubscribe + parse
 │   ├── payload.py           # TickerPayload: Kafka-ready record

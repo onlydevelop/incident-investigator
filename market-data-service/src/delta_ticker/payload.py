@@ -67,6 +67,11 @@ class TickerPayload:
             volume=cls._to_float(data.get("volume")),
         )
 
+    @classmethod
+    def from_json(cls, raw: bytes | str) -> "TickerPayload":
+        """Inverse of to_json()."""
+        return cls(**json.loads(raw))
+
     def key(self) -> bytes:
         """Kafka message key: partition by symbol so updates per instrument stay ordered."""
         return self.symbol.encode("utf-8")

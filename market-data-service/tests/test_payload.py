@@ -53,6 +53,11 @@ def test_missing_required_field_raises():
         TickerPayload.from_message(msg)
 
 
+def test_json_round_trip():
+    p = TickerPayload.from_message(MESSAGE)
+    assert TickerPayload.from_json(p.to_json()) == p
+
+
 def test_kafka_key_and_value():
     p = TickerPayload.from_message(MESSAGE)
     assert p.key() == b"C-BTC-79500-250926"

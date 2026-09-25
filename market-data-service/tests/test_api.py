@@ -4,20 +4,37 @@ import redis
 from fastapi.testclient import TestClient
 
 from delta_ticker.api import create_app
+from delta_ticker.cache import TickerCache
+from delta_ticker.payload import TickerPayload
 from delta_ticker.symbols import SymbolRegistry
+from test_payload import MESSAGE
 
 CALL = "C-BTC-80000-091026"
 PUT = "P-BTC-80000-091026"
 
 
 @pytest.fixture
-def registry():
-    return SymbolRegistry(fakeredis.FakeRedis())
+def redis_client():
+    return fakeredis.FakeRedis()
 
 
 @pytest.fixture
-def client(registry):
-    return TestClient(create_app(registry))
+def registry(redis_client):
+    return SymbolRegistry(redis_client)
+
+
+@pytest.fixture
+def cache(redis_client):
+    return TickerCache(redis_client)
+
+
+@pytest.fixture
+def client(registry, cache):
+    return TestClient(create_app(registry, cache))
+
+
+def payload_for(symbol: str) -> TickerPayload:
+    return TickerPayload.from_message({**MESSAGE, "symbol": symbol})
 
 
 def test_list_starts_empty(client):
@@ -84,6 +101,44 @@ def test_rejects_empty_body(client):
     assert client.put("/symbols", json={"symbols": []}).status_code == 422
 
 
+def test_tickers_empty(client):
+    assert client.get("/tickers").json() == {"tickers": [], "count": 0}
+
+
+def test_tickers_lists_all_cached_sorted(client, cache, redis_client):
+    cache.store(payload_for(PUT))
+    cache.store(payload_for(CALL))
+    redis_client.set("unrelated:key", "x")
+
+    r = client.get("/tickers")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 2
+    assert [t["symbol"] for t in body["tickers"]] == [CALL, PUT]
+    assert body["tickers"][0] == payload_for(CALL).to_dict()
+
+
+def test_get_ticker(client, cache):
+    cache.store(payload_for(CALL))
+    r = client.get(f"/tickers/{CALL}")
+    assert r.status_code == 200
+    assert r.json() == payload_for(CALL).to_dict()
+
+
+def test_get_ticker_missing_is_404(client):
+    r = client.get(f"/tickers/{CALL}")
+    assert r.status_code == 404
+    assert CALL in r.json()["detail"]
+
+
+def test_expired_ticker_is_gone(client, cache, redis_client):
+    cache.store(payload_for(CALL))
+    redis_client.delete(TickerCache.key_for(CALL))  # what TTL expiry does
+    assert client.get(f"/tickers/{CALL}").status_code == 404
+    assert client.get("/tickers").json()["count"] == 0
+
+
 def test_redis_down_returns_503():
     class DownRedis:
         def __getattr__(self, name):
@@ -91,8 +146,11 @@ def test_redis_down_returns_503():
                 raise redis.ConnectionError("down")
             return fail
 
-    client = TestClient(create_app(SymbolRegistry(DownRedis())))
+    down = DownRedis()
+    client = TestClient(create_app(SymbolRegistry(down), TickerCache(down)))
     r = client.get("/symbols")
     assert r.status_code == 503
     assert "Redis unavailable" in r.json()["detail"]
     assert client.get("/health").status_code == 503
+    assert client.get("/tickers").status_code == 503
+    assert client.get(f"/tickers/{CALL}").status_code == 503

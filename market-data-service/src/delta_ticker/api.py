@@ -1,6 +1,7 @@
-"""HTTP API for managing the option symbols the ticker subscribes to.
+"""HTTP API for the delta ticker.
 
-Writes go to the SymbolRegistry Redis set; the ticker picks changes up on its next refresh.
+/symbols: CRUD on the SymbolRegistry Redis set; the ticker picks changes up on its next refresh.
+/tickers: read-only view of the latest cached payload per symbol (TickerCache).
 """
 from typing import Annotated, Optional
 
@@ -10,12 +11,15 @@ from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response, st
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
+from delta_ticker.cache import TickerCache
 from delta_ticker.config import (
     API_HOST,
     API_PORT,
+    CACHE_TTL_SECONDS,
     OPTION_SYMBOL_PATTERN,
     SYMBOL_REFRESH_SECONDS,
 )
+from delta_ticker.payload import TickerPayload
 from delta_ticker.symbols import SymbolRegistry
 
 OptionSymbol = Annotated[
@@ -47,19 +51,37 @@ class SymbolOut(BaseModel):
     symbol: str
 
 
-def create_app(registry: Optional[SymbolRegistry] = None) -> FastAPI:
+class TickersOut(BaseModel):
+    tickers: list[TickerPayload]
+    count: int
+
+
+def create_app(
+    registry: Optional[SymbolRegistry] = None,
+    cache: Optional[TickerCache] = None,
+) -> FastAPI:
     app = FastAPI(
-        title="Delta ticker symbols",
-        description="CRUD for the option symbols the delta-ticker subscribes to (Redis set, no expiry).",
+        title="Delta ticker",
+        description=(
+            "CRUD for the option symbols the delta-ticker subscribes to (Redis set, no expiry), "
+            f"and the latest cached ticker per symbol (expires {CACHE_TTL_SECONDS}s after its last update)."
+        ),
     )
     app.state.registry = registry
+    app.state.cache = cache
 
     def get_registry(request: Request) -> SymbolRegistry:
         if request.app.state.registry is None:
             request.app.state.registry = SymbolRegistry.from_url()
         return request.app.state.registry
 
+    def get_cache(request: Request) -> TickerCache:
+        if request.app.state.cache is None:
+            request.app.state.cache = TickerCache.from_url()
+        return request.app.state.cache
+
     Registry = Annotated[SymbolRegistry, Depends(get_registry)]
+    Cache = Annotated[TickerCache, Depends(get_cache)]
     SymbolPath = Annotated[str, Path(pattern=OPTION_SYMBOL_PATTERN, examples=["C-BTC-80000-091026"])]
 
     @app.exception_handler(redis.RedisError)
@@ -112,6 +134,23 @@ def create_app(registry: Optional[SymbolRegistry] = None) -> FastAPI:
     def clear_symbols(registry: Registry):
         """Remove all symbols. The ticker unsubscribes from everything on its next refresh."""
         registry.clear()
+
+    @app.get("/tickers", response_model=TickersOut, tags=["tickers"])
+    def list_tickers(cache: Cache):
+        """Latest payload for every symbol that updated within the cache TTL, sorted by symbol."""
+        tickers = cache.load_all()
+        return TickersOut(tickers=tickers, count=len(tickers))
+
+    @app.get("/tickers/{symbol}", response_model=TickerPayload, tags=["tickers"])
+    def get_ticker(symbol: str, cache: Cache):
+        """Latest payload for one symbol. 404 if it isn't subscribed or hasn't updated within the cache TTL."""
+        ticker = cache.load(symbol)
+        if ticker is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"No ticker for {symbol} in the last {CACHE_TTL_SECONDS}s",
+            )
+        return ticker
 
     return app
 
