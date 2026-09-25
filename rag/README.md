@@ -11,6 +11,7 @@ make search Q="consumer lag" BACKEND=pgvector ARGS="--type runbook -k 3 --full"
 make test            # unit tests; store tests skip unless `make infra` is up
 make eval            # compare chunking strategies (in-memory, no infra needed)
 make eval-backends   # compare pgvector, BM25, k-NN and hybrid search
+make eval-rerank     # recall and MRR before and after cross-encoder reranking (slow)
 make misses STRATEGY=heading+ctx BACKEND=memory   # what a combination gets wrong, and what it retrieved instead
 make chunks STRATEGY=heading+ctx                  # inspect a strategy's chunks
 ```
@@ -27,6 +28,7 @@ Recommended setup, based on both evals: **`heading-merged+ctx` chunks, searched 
 | [`pgvector_store.py`](src/incident_rag/pgvector_store.py) | `rag.chunks` table with an HNSW cosine index. Every strategy is stored side by side, keyed by `index_name` |
 | [`opensearch_store.py`](src/incident_rag/opensearch_store.py) | One index per strategy, holding a BM25 `text` field (english analyzer) and a Lucene HNSW `knn_vector`, plus the two hybrid search pipelines |
 | [`backends.py`](src/incident_rag/backends.py) | Maps backend names to retrievers and opens stores only when they are used |
+| [`rerank.py`](src/incident_rag/rerank.py) | Cross-encoder reranking on top of any backend (`<backend>+rerank-minilm`, `<backend>+rerank-bge`) |
 | [`ingest.py`](src/incident_rag/ingest.py), [`search.py`](src/incident_rag/search.py) | Command-line tools for loading and querying the stores |
 | [`evaluate.py`](src/incident_rag/evaluate.py) | The eval harness |
 
@@ -131,10 +133,43 @@ What the numbers say:
 4. **BM25 alone is weaker than vectors,** except at Recall@1. On-call questions are paraphrases more often than exact keyword matches.
 5. **Min–max and RRF are close.** Min–max has the better Recall@1 and MRR; RRF is slightly better at 1000 tokens. The gaps are within noise (a few questions). Min–max has one known quirk: a chunk that tops one list and is missing from the other scores exactly 0.5, so ties are common. You'll see several 0.500 scores in `make search` output.
 
+## Reranking
+
+A reranker is a second, slower model that re-reads the top results. The first-stage backend fetches 30 candidates, and a cross-encoder scores each (question, chunk) pair together and reorders them. `make eval-rerank` compares each first stage with and without two rerankers, both run locally through fastembed:
+
+- `minilm`: `Xenova/ms-marco-MiniLM-L-6-v2`, 22M parameters.
+- `bge`: `BAAI/bge-reranker-base`, 278M parameters.
+
+Before and after, on `heading-merged+ctx`:
+
+| First stage | Reranker | Recall@1 | Recall@5 | MRR@10 | Recall@500 tok | ms/query (p50) |
+|---|---|---|---|---|---|---|
+| vector (memory / pgvector) | none | 56% | 93% | 0.73 | 81% | <1 |
+| | minilm | 74% | 93% | 0.81 | 82% | 1205 |
+| | bge | 67% | 91% | 0.77 | 75% | 5924 |
+| BM25 | none | 61% | 88% | 0.73 | 74% | 4 |
+| | minilm | 74% | 93% | 0.81 | 82% | 1208 |
+| | bge | 67% | 91% | 0.77 | 75% | 5780 |
+| **hybrid (min–max)** | **none** | 72% | 93% | **0.81** | **84%** | **6** |
+| | minilm | 74% | 93% | 0.81 | 82% | 1496 |
+| | bge | 67% | 91% | 0.77 | 75% | 6681 |
+
+Latency is measured on a 4-core laptop CPU and excludes query embedding, which costs the same for every row. With `fixed-256+ctx` and `heading+ctx` the pattern is the same: minilm helps the vector and BM25 first stages, and adds little or nothing over hybrid.
+
+What the numbers say:
+
+1. **Recall@5 barely moves, because it's already at its ceiling.** 93% of questions can be answered by some `heading-merged+ctx` chunk at all (the "Answerable" column above), and vector and hybrid search already reach 93% Recall@5. A reranker can only reorder what it's given, so only the ranking metrics (Recall@1, MRR) can improve.
+2. **MiniLM lifts the weak first stages up to hybrid's level.** For vector-only it raises MRR from 0.73 to 0.81 and Recall@1 from 56% to 74%, and BM25 gets the same lift.
+3. **It adds nothing on top of hybrid, at about 250× the latency.** Hybrid alone already scores MRR 0.81 in 6 ms; hybrid plus MiniLM scores 0.81 in about 1.5 s.
+4. **The bigger reranker is worse here.** bge-reranker-base scores below MiniLM on every metric and takes about 6 s per query. MiniLM is trained on question-and-passage search (MS MARCO), which matches these on-call questions; the larger model doesn't pay for its size on this corpus.
+5. **On this corpus the first stage hardly matters once you rerank.** Each reranker produces identical scores whether it starts from vector, BM25 or hybrid, because 30 candidates out of 45 chunks is two-thirds of the corpus, so every first stage hands over almost the same pool. On a corpus of thousands of chunks, the first stage decides what the reranker ever sees, and hybrid's better recall would matter more.
+
+**Recommendation:** keep `opensearch-hybrid` without a reranker as the default. Revisit reranking when the corpus grows to hundreds of documents, or if the first stage has to be vector-only (e.g. pgvector without OpenSearch). In that case `+rerank-minilm` is the one to use.
+
 ## Caveats
 
 - **Small sample:** 57 questions, so one question is about 2 points. Treat gaps under about 5 points as noise. The conclusions above rest on larger gaps.
 - **Built with the corpus in view:** the questions and the heading chunker were written after reading the corpus, and the corpus follows strict templates. Expect smaller gains on messier, less structured documents.
-- **Fixed model and scoring:** results are for one small embedding model and pure dense retrieval, with no reranker and no BM25. The harness makes it cheap to rerun with others.
+- **Fixed models:** results are for one small embedding model and two rerankers. The harness makes it cheap to rerun with others.
 - **Hybrid results are specific to this corpus:** the corpus is full of exact identifiers (metric names, error codes, alert names), which is where BM25 shines. A corpus written in plainer prose would gain less from hybrid search.
 - **Not the agent's golden set:** these questions test retrieval over what the corpus says. The agent's golden-set incidents stay out of the corpus (see its README).
