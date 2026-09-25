@@ -21,6 +21,11 @@ services:
     restart: unless-stopped
     # Python as PID 1 ignores SIGTERM; tini forwards it so `stop` is immediate.
     init: true
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
 
 volumes:
   redis-data:

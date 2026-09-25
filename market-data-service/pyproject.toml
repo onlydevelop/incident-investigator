@@ -9,6 +9,7 @@ description = "Streams Delta Exchange v2/ticker updates as Kafka-ready payloads"
 requires-python = ">=3.11"
 dependencies = [
     "websocket-client>=1.9,<2",
+    "redis>=6,<9",
 ]
 
 [project.optional-dependencies]
