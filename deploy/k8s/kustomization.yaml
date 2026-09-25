@@ -1,0 +1,39 @@
+# The whole stack on the local k3s (Rancher Desktop): kubectl apply -k deploy/k8s
+# Use the Makefile next to this file; it builds the images first. See README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: incident-investigator
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: portfolio
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - infra/redis.yaml
+  - infra/kafka.yaml
+  - infra/kafka-topics-job.yaml
+  - infra/postgres.yaml
+  - market-data/delta-ticker.yaml
+  - market-data/symbols-api.yaml
+  - order-service/orders-api.yaml
+  - order-service/position-updater.yaml
+  - ingress.yaml
+
+# Local-development credentials, same as ../../infra/docker-compose.yml. Generated names get a
+# content hash, so changing a value rolls the pods that use it.
+secretGenerator:
+  - name: postgres-credentials
+    literals:
+      - POSTGRES_USER=portfolio
+      - POSTGRES_PASSWORD=portfolio
+      - POSTGRES_DB=portfolio
+
+configMapGenerator:
+  - name: app-config
+    literals:
+      - REDIS_URL=redis://redis:6379/0
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - MARKET_DATA_URL=http://symbols-api:8000

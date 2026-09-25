@@ -1,0 +1,55 @@
+# Kafka consumer that prices positions. More replicas would share the topic's 3 partitions
+# through the consumer group, but one is plenty here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: position-updater
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: position-updater
+  template:
+    metadata:
+      labels:
+        app: position-updater
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001  # the images' `app` user
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # The updater creates the schema on startup and exits if Postgres isn't there yet;
+        # waiting here avoids a CrashLoopBackOff on a fresh deploy.
+        - name: wait-for-postgres
+          image: postgres:18
+          command: ["sh", "-c", "until pg_isready -h postgres -p 5432; do echo waiting for postgres; sleep 2; done"]
+          securityContext:
+            runAsUser: 999  # the image's postgres user
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+      containers:
+        - name: position-updater
+          image: order-service/order-service:local
+          imagePullPolicy: Never
+          command: ["order-service-updater"]
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: postgres-credentials
+          env:
+            - name: DATABASE_URL
+              value: postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {memory: 256Mi}

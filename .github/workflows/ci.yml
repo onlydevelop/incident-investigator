@@ -41,6 +41,9 @@ jobs:
       - name: Shellcheck scripts
         run: shellcheck scripts/*.sh
 
+      - name: Render k8s manifests
+        run: kubectl kustomize deploy/k8s > /dev/null
+
   test-market-data:
     name: Test market-data-service
     runs-on: ubuntu-latest

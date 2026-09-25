@@ -20,6 +20,7 @@ FROM base AS runtime
 RUN pip install .
 
 RUN useradd --create-home --uid 10001 app
-USER app
+# Numeric, so Kubernetes' runAsNonRoot can verify it (it rejects a user name like `app`).
+USER 10001
 
 CMD ["delta-ticker"]

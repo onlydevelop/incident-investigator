@@ -4,6 +4,11 @@
 #
 #   scripts/smoke-test.sh
 #
+# Against k3s, point it at the ingress and the broker pod (`make -C deploy/k8s smoke` does this):
+#
+#   ORDERS_URL=http://orders.localhost MARKET_DATA_URL=http://market-data.localhost \
+#   KAFKA_EXEC="kubectl -n incident-investigator exec -i kafka-0 --" scripts/smoke-test.sh
+#
 # It creates a buy position on a made-up symbol, publishes two fake ticks for that symbol to the
 # real Kafka topic, and checks that the first sets entry_price (ask) and the second current_price
 # (bid). The delta-ticker isn't needed. Cleanup deletes the position and unsubscribes the symbol.
@@ -16,9 +21,11 @@ SYMBOL=${SMOKE_SYMBOL:-C-SMOKETEST-1-311299}
 TOPIC=market-data.ticker
 
 cd "$(dirname "$0")/.."
+# How to run a command in the broker container; k8s sets e.g. KAFKA_EXEC="kubectl -n incident-investigator exec -i kafka-0 --".
+read -r -a kafka_exec <<< "${KAFKA_EXEC:-docker compose -f infra/docker-compose.yml exec -T kafka}"
 kafka() {  # kafka <tool.sh> [args...]: run one of Kafka's CLI tools inside the broker container
   local tool=$1; shift
-  docker compose -f infra/docker-compose.yml exec -T kafka "/opt/kafka/bin/$tool" "$@"
+  "${kafka_exec[@]}" "/opt/kafka/bin/$tool" "$@"
 }
 json() { python3 -c "import json, sys; print(json.load(sys.stdin)$1)"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }

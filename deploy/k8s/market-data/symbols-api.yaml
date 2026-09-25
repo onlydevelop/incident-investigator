@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: symbols-api
+spec:
+  selector:
+    app: symbols-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: symbols-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: symbols-api
+  template:
+    metadata:
+      labels:
+        app: symbols-api
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001  # the images' `app` user
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: symbols-api
+          image: market-data/delta-ticker:local
+          imagePullPolicy: Never
+          command: ["delta-ticker-api"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: app-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          # /health pings Redis, so the pod only gets traffic once Redis is reachable.
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            # Liveness must not depend on Redis, or a Redis outage would restart this pod.
+            httpGet: {path: /docs, port: http}
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {memory: 256Mi}

@@ -1,0 +1,41 @@
+# Streams Delta tickers to Kafka and Redis. One replica: two would double every Kafka message.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: delta-ticker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # never two tickers at once
+  selector:
+    matchLabels:
+      app: delta-ticker
+  template:
+    metadata:
+      labels:
+        app: delta-ticker
+    spec:
+      enableServiceLinks: false
+      # Python as PID 1 ignores SIGTERM (no tini here, unlike docker-compose's `init: true`),
+      # so keep the wait before SIGKILL short.
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001  # the images' `app` user
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: delta-ticker
+          image: market-data/delta-ticker:local
+          imagePullPolicy: Never  # built locally; k3s shares Rancher Desktop's docker daemon
+          command: ["delta-ticker"]
+          envFrom:
+            - configMapRef:
+                name: app-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
