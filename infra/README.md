@@ -13,8 +13,8 @@ Each service keeps its own `docker-compose.yml` with only its app containers. Th
   │   symbols-api)         │                                 │
   │                        ├──► kafka:9092     infra-kafka   │ ◄── localhost:9094
   │  order-service ────────┤                                 │
-  │  (planned)             └──► postgres:5432  infra-postgres│ ◄── localhost:5432
-  │                                                          │
+  │  (orders-api,          └──► postgres:5432  infra-postgres│ ◄── localhost:5432
+  │   position-updater)                                      │
   └──────────────────────────────────────────────────────────┘
 ```
 
@@ -74,7 +74,7 @@ Auto-creation is turned off, so producing to a misspelt topic fails instead of q
 
 | Topic | Partitions | Producer | Consumer | Key / value |
 |---|---|---|---|---|
-| `market-data.ticker` | 3 | market-data-service (`delta-ticker`), one message per update | order-service (planned), to mark positions to market | Symbol / `TickerPayload` JSON |
+| `market-data.ticker` | 3 | market-data-service (`delta-ticker`), one message per update | order-service (`position-updater`), to price positions | Symbol / `TickerPayload` JSON |
 
 To add a topic, add it to `TOPICS` and run `make topics-create`.
 

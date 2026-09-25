@@ -15,7 +15,7 @@ Delta Exchange (wss, v2/ticker)
         │    │  └──► kafka ── market-data.ticker   key = symbol, value = payload JSON
         │    │                        │
         │    │                        ▼
-        │    │               consumers (order-service, planned)
+        │    │               order-service (position-updater)
   write │    │ read every 30s
         ▼    │
   redis ─────┴── ticker:latest:<symbol>   latest payload, TTL 10s

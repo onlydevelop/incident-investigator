@@ -1,0 +1,54 @@
+# Postgres and kafka run in the shared infra stack (../infra); the symbols API in
+# market-data-service. `make up` starts both. Everything talks over the `portfolio` network.
+x-env: &env
+  DATABASE_URL: postgresql://portfolio:portfolio@postgres:5432/portfolio
+
+services:
+  orders-api:
+    build:
+      context: .
+      target: runtime
+    image: order-service/order-service
+    container_name: orders-api
+    restart: unless-stopped
+    # Python as PID 1 ignores SIGTERM; tini forwards it so `stop` is immediate.
+    init: true
+    command: ["order-service-api"]
+    environment:
+      <<: *env
+      MARKET_DATA_URL: http://symbols-api:8000
+    ports:
+      - "${ORDERS_API_PORT:-8001}:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  position-updater:
+    # Same image as the API, different command.
+    build:
+      context: .
+      target: runtime
+    image: order-service/order-service
+    container_name: position-updater
+    restart: unless-stopped
+    init: true
+    command: ["order-service-updater"]
+    environment:
+      <<: *env
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+  # `make test`: pytest against the shared Postgres, in a throwaway schema.
+  test:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    environment:
+      <<: *env
+
+networks:
+  default:
+    name: portfolio
+    external: true

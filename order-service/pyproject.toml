@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "order-service"
+version = "0.1.0"
+description = "Paper-trading positions in Postgres, priced from market-data-service's Kafka ticker feed"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "psycopg[binary,pool]>=3.2,<4",
+    "confluent-kafka>=2.6,<3",
+    "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+# httpx2 is what FastAPI's TestClient uses; the service itself uses httpx.
+dev = ["pytest>=8", "httpx2>=2"]
+
+[project.scripts]
+order-service-api = "order_service.api:main"
+order-service-updater = "order_service.updater:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+order_service = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
