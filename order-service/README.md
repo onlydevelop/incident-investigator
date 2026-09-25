@@ -1,5 +1,9 @@
 # order-service
 
+[![CI](../../../actions/workflows/ci.yml/badge.svg?branch=main)](../../../actions/workflows/ci.yml?query=branch%3Amain)
+[![tests](../../../raw/badges/tests-order-service.svg)](#tests)
+[![coverage](../../../raw/badges/coverage-order-service.svg)](#tests)
+
 Paper-trading positions for Delta Exchange options. There are no real orders: a position is recorded in Postgres and priced from the live ticker feed that [market-data-service](../market-data-service/README.md) publishes to Kafka.
 
 Creating a position takes two steps, and it's all or nothing:

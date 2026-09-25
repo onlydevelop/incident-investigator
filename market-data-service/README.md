@@ -1,5 +1,9 @@
 # market-data-service
 
+[![CI](../../../actions/workflows/ci.yml/badge.svg?branch=main)](../../../actions/workflows/ci.yml?query=branch%3Amain)
+[![tests](../../../raw/badges/tests-market-data-service.svg)](#makefile-commands)
+[![coverage](../../../raw/badges/coverage-market-data-service.svg)](#makefile-commands)
+
 Streams live option tickers from [Delta Exchange](https://www.delta.exchange/) over a websocket and converts each update into a `TickerPayload`. Each payload is published to the Kafka topic `market-data.ticker` (keyed by symbol), cached in Redis as the latest value per symbol with a 10-second TTL, and printed to stdout.
 
 The symbols to subscribe to are also kept in Redis, and a FastAPI service manages them over HTTP. The ticker re-reads them every 30 seconds, so you can add or remove symbols without restarting anything.

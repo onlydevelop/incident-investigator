@@ -200,3 +200,50 @@ jobs:
           docker compose -f order-service/docker-compose.yml down
           docker compose -f market-data-service/docker-compose.yml down
           docker compose -f infra/docker-compose.yml down --volumes
+
+  # README badges: SVGs built from this run's results and force-pushed to the `badges` branch.
+  # Runs for pushes and manual runs on main (never for PRs), and also when a job failed so the badges show it.
+  badges:
+    name: Publish badges
+    runs-on: ubuntu-latest
+    needs: [lint, test-market-data, test-order-service, build, smoke]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: write  # to push the badges branch
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download test and coverage reports
+        uses: actions/download-artifact@v8
+        continue-on-error: true  # a test job that never ran leaves no artifact; badge.py writes "unknown"
+        with:
+          pattern: coverage-*
+          path: reports
+
+      - name: Generate badges
+        env:
+          BUILD: ${{ needs.build.result }}
+          LINT: ${{ needs.lint.result }}
+          SMOKE: ${{ needs.smoke.result }}
+        run: |
+          b() { python3 scripts/badge.py "$@"; }
+          b status "$BUILD" out/build.svg --label build
+          b status "$LINT" out/lint.svg --label lint
+          b status "$SMOKE" out/smoke.svg --label "smoke test"
+          for svc in market-data-service order-service; do
+            b tests "reports/coverage-$svc/junit.xml" "out/tests-$svc.svg" --label "$svc tests"
+            b coverage "reports/coverage-$svc/coverage.xml" "out/coverage-$svc.svg" --label "$svc coverage"
+          done
+
+      - name: Push to the badges branch
+        working-directory: out
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # One orphan commit, force-pushed: the branch holds only the latest badges, no history.
+          git init -q -b badges
+          git add .
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898283+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Badges for ${GITHUB_SHA::7} (run ${GITHUB_RUN_ID})"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
