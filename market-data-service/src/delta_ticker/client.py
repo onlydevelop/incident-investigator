@@ -3,10 +3,8 @@ import json
 import threading
 from typing import Callable, Optional
 
+from delta_ticker.config import WEBSOCKET_URL
 from delta_ticker.payload import TickerPayload
-
-# Public websocket endpoint (no authentication required for ticker channel)
-WEBSOCKET_URL = "wss://socket.india.delta.exchange"
 
 
 class DeltaTickerClient:

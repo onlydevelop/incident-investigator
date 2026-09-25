@@ -3,6 +3,8 @@ from typing import Callable, Optional
 
 import redis
 
+from delta_ticker.config import REDIS_URL, SYMBOL_REFRESH_SECONDS, SYMBOLS_KEY
+
 
 class SymbolRegistry:
     """The symbols to subscribe to, kept in a Redis set with no expiry.
@@ -10,13 +12,13 @@ class SymbolRegistry:
     Manage it with SADD / SREM / DEL on `KEY`, e.g. via `make symbols-add`.
     """
 
-    KEY = "ticker:symbols"
+    KEY = SYMBOLS_KEY
 
     def __init__(self, client: redis.Redis):
         self.client = client
 
     @classmethod
-    def from_url(cls, url: str) -> "SymbolRegistry":
+    def from_url(cls, url: str = REDIS_URL) -> "SymbolRegistry":
         return cls(redis.Redis.from_url(url))
 
     def get(self) -> Optional[list[str]]:
@@ -37,7 +39,7 @@ class SymbolRefresher(threading.Thread):
         self,
         registry: SymbolRegistry,
         on_symbols: Callable[[list[str]], None],
-        interval_seconds: float = 30,
+        interval_seconds: float = SYMBOL_REFRESH_SECONDS,
     ):
         super().__init__(name="symbol-refresher", daemon=True)
         self.registry = registry

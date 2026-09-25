@@ -231,9 +231,13 @@ export DOCKER_HOST=unix://$HOME/.rd/docker.sock
 | What | Where | Default |
 |---|---|---|
 | Symbols to subscribe to | Redis set `ticker:symbols` (no expiry). Manage with the `make symbols-*` targets | empty |
-| Symbol refresh interval | `SYMBOL_REFRESH_SECONDS` in [`src/delta_ticker/__main__.py`](src/delta_ticker/__main__.py) | `30` |
-| Cache TTL | `CACHE_TTL_SECONDS` in [`src/delta_ticker/__main__.py`](src/delta_ticker/__main__.py) | `10` |
-| Redis connection | `REDIS_URL` environment variable | `redis://redis:6379/0` in Docker, `redis://localhost:6379/0` otherwise |
+| Symbol refresh interval | `SYMBOL_REFRESH_SECONDS` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `30` |
+| Cache TTL | `CACHE_TTL_SECONDS` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `10` |
+| Redis key names | `CACHE_KEY_PREFIX`, `SYMBOLS_KEY` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py). Keep the Makefile's `CACHE_PREFIX` / `SYMBOLS_KEY` in sync | `ticker:latest:`, `ticker:symbols` |
+| Delta websocket URL | `WEBSOCKET_URL` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `wss://socket.india.delta.exchange` |
+| Redis connection | `REDIS_URL` environment variable, read in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `redis://redis:6379/0` in Docker, `redis://localhost:6379/0` otherwise |
+
+Changing a value in `config.py` needs a rebuild: `make ticker-restart`.
 | Redis host port | `REDIS_PORT` environment variable | `6379` |
 
 Option symbols follow `<C|P>-<underlying>-<strike>-<DDMMYY>`, e.g. `C-BTC-79500-250926` is a BTC call, strike 79,500, expiring 25 Sep 2026. Expired symbols stop updating, so swap them out as options expire, e.g. `make symbols-remove SYMBOLS=...` and `make symbols-add SYMBOLS=...`. No restart is needed.
@@ -274,7 +278,8 @@ market-data-service/
 ├── Dockerfile               # stages: base, test, runtime
 ├── pyproject.toml           # package metadata, dependencies, `delta-ticker` command
 ├── src/delta_ticker/
-│   ├── __main__.py          # entry point: TTL, refresh interval, wiring
+│   ├── __main__.py          # entry point: wiring
+│   ├── config.py            # constants: URLs, Redis keys, TTL, refresh interval
 │   ├── client.py            # DeltaTickerClient: websocket subscribe/unsubscribe + parse
 │   ├── payload.py           # TickerPayload: Kafka-ready record
 │   ├── cache.py             # TickerCache: latest payload per symbol in Redis

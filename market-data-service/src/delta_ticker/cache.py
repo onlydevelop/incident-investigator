@@ -2,22 +2,21 @@ from typing import Optional
 
 import redis
 
+from delta_ticker.config import CACHE_KEY_PREFIX, CACHE_TTL_SECONDS, REDIS_URL
 from delta_ticker.payload import TickerPayload
-
-DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 
 
 class TickerCache:
     """Keeps the latest TickerPayload per symbol in Redis, expiring after `ttl_seconds`."""
 
-    KEY_PREFIX = "ticker:latest:"
+    KEY_PREFIX = CACHE_KEY_PREFIX
 
-    def __init__(self, client: redis.Redis, ttl_seconds: int = 10):
+    def __init__(self, client: redis.Redis, ttl_seconds: int = CACHE_TTL_SECONDS):
         self.client = client
         self.ttl_seconds = ttl_seconds
 
     @classmethod
-    def from_url(cls, url: str = DEFAULT_REDIS_URL, ttl_seconds: int = 10) -> "TickerCache":
+    def from_url(cls, url: str = REDIS_URL, ttl_seconds: int = CACHE_TTL_SECONDS) -> "TickerCache":
         return cls(redis.Redis.from_url(url), ttl_seconds)
 
     @classmethod

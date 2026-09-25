@@ -1,18 +1,13 @@
-import os
-
-from delta_ticker.cache import DEFAULT_REDIS_URL, TickerCache
+from delta_ticker.cache import TickerCache
 from delta_ticker.client import DeltaTickerClient
+from delta_ticker.config import CACHE_TTL_SECONDS, REDIS_URL, SYMBOL_REFRESH_SECONDS
 from delta_ticker.payload import TickerPayload
 from delta_ticker.symbols import SymbolRefresher, SymbolRegistry
 
-CACHE_TTL_SECONDS = 10
-SYMBOL_REFRESH_SECONDS = 30
-
 
 def main():
-    redis_url = os.environ.get("REDIS_URL", DEFAULT_REDIS_URL)
-    cache = TickerCache.from_url(redis_url, CACHE_TTL_SECONDS)
-    registry = SymbolRegistry.from_url(redis_url)
+    cache = TickerCache.from_url(REDIS_URL, CACHE_TTL_SECONDS)
+    registry = SymbolRegistry.from_url(REDIS_URL)
 
     def on_payload(payload: TickerPayload):
         cache.store(payload)
