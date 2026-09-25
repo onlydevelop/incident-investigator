@@ -1,0 +1,416 @@
+# Retrieval eval set for the incident corpus.
+#
+# Each question lists one or more acceptable answers. A retrieved chunk answers the question if it comes
+# from that answer's document and contains every one of its evidence snippets (compared case-insensitively,
+# whitespace collapsed). Evidence is copied verbatim from the corpus; the loader rejects snippets that are
+# not in the document, so edits to the corpus that break a question fail loudly.
+#
+# kind:
+#   single-section: all evidence sits in one section of the document.
+#   cross-section:  evidence spans two sections (e.g. a triage step and its mitigation), so a chunk must
+#                   cover both to count.
+#
+# These questions are about what the corpus says. They are not the agent's golden-set incidents, which
+# stay out of the corpus (see incident-corpus/README.md, "Keeping evals honest").
+
+# --- RB-001: Stale market data / WebSocket feed down ---
+- id: q01
+  question: "The market-data WebSocket gets HTTP 429 every time it reconnects. Should I restart the pod?"
+  kind: single-section
+  answers:
+    - doc: RB-001
+      evidence: ["do **not** restart repeatedly"]
+    - doc: PM-001
+      evidence: ["Restarting pods, the usual fix for a dead socket, made this incident worse."]
+- id: q02
+  question: "Only a handful of far-dated strikes show a high tick age. Is that an incident?"
+  kind: single-section
+  answers:
+    - doc: RB-001
+      evidence: ["Illiquid strikes can go quiet legitimately"]
+- id: q03
+  question: "The exchange is down. Can we switch production to replay mode to keep trading?"
+  kind: single-section
+  answers:
+    - doc: RB-001
+      evidence: ["switch to replay mode only in non-production test environments"]
+- id: q04
+  question: "Socket shows connected but zero ticks are coming in. What is happening and how do I fix it?"
+  kind: cross-section
+  answers:
+    - doc: RB-001
+      evidence: ["Connected but no ticks received", "Silent disconnect or dead reconnect loop: restart the pod"]
+
+# --- RB-002: Kafka consumer lag ---
+- id: q05
+  question: "Position marks are behind but order prices look right. Why does consumer lag not affect pricing?"
+  kind: single-section
+  answers:
+    - doc: RB-002
+      evidence: ["Order pricing is **not** affected, because orders read prices from Redis"]
+- id: q06
+  question: "What command shows partition assignment and lag for the position marking consumer group?"
+  kind: single-section
+  answers:
+    - doc: RB-002
+      evidence: ["kafka-consumer-groups.sh", "--describe --group order-risk-marker"]
+- id: q07
+  question: "Lag is growing on every partition and the logs keep showing partitions revoked and assigned. What config should I change?"
+  kind: single-section
+  answers:
+    - doc: RB-002
+      evidence: ["Rebalance storm: raise `max.poll.interval.ms` or reduce `max.poll.records`"]
+
+# --- RB-003: Order ack latency SLO ---
+- id: q08
+  question: "Order p99 is over 200 ms and the slow trace shows the Redis GET span grew. Which runbook do I follow?"
+  kind: single-section
+  answers:
+    - doc: RB-003
+      evidence: ["| Redis GET | Redis memory pressure or network | RB-006 |"]
+- id: q09
+  question: "The risk check span is slow and looks CPU bound. Which metric shows whether the pod is being throttled?"
+  kind: single-section
+  answers:
+    - doc: RB-003
+      evidence: ["container_cpu_cfs_throttled_periods_total"]
+- id: q10
+  question: "Only one order-risk pod has high latency. What does that usually mean and what should I do?"
+  kind: cross-section
+  answers:
+    - doc: RB-003
+      evidence: ["One slow pod usually means a bad node or a stuck worker", "One bad pod: delete it and let it reschedule"]
+
+# --- RB-004: Order reject rate spike ---
+- id: q11
+  question: "Rejects with reason LIMIT_EXCEEDED jumped. What does that reason mean and where should I look?"
+  kind: single-section
+  answers:
+    - doc: RB-004
+      evidence: ["Order over configured risk limit | Check config (PM-002)"]
+- id: q12
+  question: "How do I find out whether rejected orders are concentrated on certain symbols or a single client?"
+  kind: single-section
+  answers:
+    - doc: RB-004
+      evidence: ["event=\"order_rejected\"", "cluster on specific symbols, sizes, or one client"]
+- id: q13
+  question: "Every pod is healthy and latency is fine, yet orders fail. What severity is that?"
+  kind: single-section
+  answers:
+    - doc: RB-004
+      evidence: ["Treat it as sev1 because the desk cannot trade"]
+
+# --- RB-005: PostgreSQL pool exhaustion ---
+- id: q14
+  question: "pg_stat_activity shows many connections sitting idle in transaction. What does that point to?"
+  kind: single-section
+  answers:
+    - doc: RB-005
+      evidence: ["code opened a transaction and did slow work"]
+- id: q15
+  question: "The DB pool is saturated. Can I just add more order-risk replicas?"
+  kind: single-section
+  answers:
+    - doc: RB-005
+      evidence: ["Never raise replicas without recalculating total connections"]
+    - doc: RB-005
+      evidence: ["Scaling replicas can itself cause this incident"]
+- id: q16
+  question: "How do I kill a runaway Postgres query that is holding connections?"
+  kind: single-section
+  answers:
+    - doc: RB-005
+      evidence: ["pg_terminate_backend"]
+- id: q17
+  question: "What errors do SQLAlchemy and asyncpg raise when the connection pool runs out?"
+  kind: single-section
+  answers:
+    - doc: RB-005
+      evidence: ["QueuePool limit ... reached", "TooManyConnectionsError"]
+
+# --- RB-006: Redis memory pressure ---
+- id: q18
+  question: "Why are illiquid option strikes the first prices to vanish from Redis when memory is tight?"
+  kind: single-section
+  answers:
+    - doc: RB-006
+      evidence: ["allkeys-lru", "illiquid strikes that update rarely"]
+- id: q19
+  question: "A price key is missing from Redis. How do I tell whether it was evicted or simply expired?"
+  kind: single-section
+  answers:
+    - doc: RB-006
+      evidence: ["increase(redis_evicted_keys_total[10m])", "increase(redis_expired_keys_total[10m])"]
+- id: q20
+  question: "How do I find out what is using up Redis memory?"
+  kind: single-section
+  answers:
+    - doc: RB-006
+      evidence: ["redis-cli --bigkeys"]
+
+# --- RB-007: Kafka broker / producer errors ---
+- id: q21
+  question: "Ticks received keeps rising but ticks published is flat, while Redis prices are fresh. Where is the fault?"
+  kind: single-section
+  answers:
+    - doc: RB-007
+      evidence: ["This split is a strong signal the problem is in Kafka, not the feed"]
+- id: q22
+  question: "Producer errors say NOT_ENOUGH_REPLICAS. Can I lower min.insync.replicas to get ticks flowing again?"
+  kind: single-section
+  answers:
+    - doc: RB-007
+      evidence: ["Do not lower `min.insync.replicas`", "silent data loss"]
+- id: q23
+  question: "Which query shows how full the Kafka broker volumes are?"
+  kind: single-section
+  answers:
+    - doc: RB-007
+      evidence: ["kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\"data-kafka-.*\"}"]
+
+# --- RB-008: Kafka hot partition ---
+- id: q24
+  question: "Most positions re-mark on time but a few near-dated ATM contracts are stale, and total lag looks fine. What is going on?"
+  kind: single-section
+  answers:
+    - doc: RB-008
+      evidence: ["Total lag may look acceptable because the other partitions are empty"]
+- id: q25
+  question: "Could we key ticks randomly to spread load evenly across partitions?"
+  kind: single-section
+  answers:
+    - doc: RB-008
+      evidence: ["Do not switch to random keys; per-symbol ordering is required"]
+- id: q26
+  question: "How do I see which contract symbols are landing on one busy partition?"
+  kind: single-section
+  answers:
+    - doc: RB-008
+      evidence: ["--partition <n> --max-messages 200"]
+
+# --- RB-009: CrashLoopBackOff / OOMKilled ---
+- id: q27
+  question: "A container exited with code 137. What does that mean?"
+  kind: single-section
+  answers:
+    - doc: RB-009
+      evidence: ["`OOMKilled` (exit 137): memory limit hit"]
+- id: q28
+  question: "Memory in the Python service climbs steadily for hours before it gets killed. What are the usual causes?"
+  kind: single-section
+  answers:
+    - doc: RB-009
+      evidence: ["unbounded dicts", "growing asyncio task sets"]
+- id: q29
+  question: "The liveness probe keeps killing the pod under load. Why would a live service fail its probe?"
+  kind: single-section
+  answers:
+    - doc: RB-009
+      evidence: ["a blocking call in the event loop stops the probe handler"]
+
+# --- RB-010: Bad release rollback ---
+- id: q30
+  question: "I ran kubectl rollout undo after a bad risk-limits ConfigMap change and nothing changed. How do I roll back config?"
+  kind: single-section
+  answers:
+    - doc: RB-010
+      evidence: ["ConfigMaps are not versioned by rollouts", "re-apply the previous version from Git"]
+    - doc: PM-002
+      evidence: ["`kubectl rollout undo` does not revert ConfigMaps"]
+- id: q31
+  question: "During a rolling update, how can I tell whether the new version is the one misbehaving?"
+  kind: single-section
+  answers:
+    - doc: RB-010
+      evidence: ["every span and metric carries `service.version`"]
+- id: q32
+  question: "When should I roll back straight away instead of debugging the live system?"
+  kind: single-section
+  answers:
+    - doc: RB-010
+      evidence: ["within 30 minutes of a deploy or ConfigMap change"]
+
+# --- RB-011: Telemetry gap ---
+- id: q33
+  question: "Dashboards are flat and no alerts have fired. How do I tell a quiet system from missing telemetry?"
+  kind: single-section
+  answers:
+    - doc: RB-011
+      evidence: ["The newest data point in a panel is minutes old while the services are clearly running"]
+- id: q34
+  question: "Metrics and logs are arriving but traces are missing. What is likely broken?"
+  kind: single-section
+  answers:
+    - doc: RB-011
+      evidence: ["Only traces: Tempo ingestion or trace exporter failing"]
+- id: q35
+  question: "How do we keep the OpenTelemetry collector from running out of memory under heavy trace load?"
+  kind: single-section
+  answers:
+    - doc: RB-011
+      evidence: ["set `memory_limiter` below the container limit"]
+    - doc: PM-007
+      evidence: ["`memory_limiter` at 80% of the container limit"]
+
+# --- RB-012: Clock skew ---
+- id: q36
+  question: "Tick age is negative on one pod. Is that harmless?"
+  kind: single-section
+  answers:
+    - doc: RB-012
+      evidence: ["**Clock behind**", "hiding a real feed problem"]
+- id: q37
+  question: "What commands show whether a node's time is synced?"
+  kind: single-section
+  answers:
+    - doc: RB-012
+      evidence: ["timedatectl status", "chronyc tracking"]
+
+# --- PM-001: Reconnect storm ---
+- id: q38
+  question: "What was the root cause when the exchange rate-limited our IP after a network blip?"
+  kind: single-section
+  answers:
+    - doc: PM-001
+      evidence: ["fixed 50 ms delay and no cap"]
+- id: q39
+  question: "What backoff did we adopt for WebSocket reconnects after the rate-limit incident?"
+  kind: single-section
+  answers:
+    - doc: PM-001
+      evidence: ["Exponential backoff with jitter (1 s to 60 s cap)"]
+
+# --- PM-002: Risk-limit typo ---
+- id: q40
+  question: "Have we had an incident where a risk limit was entered in the wrong unit?"
+  kind: single-section
+  answers:
+    - doc: PM-002
+      evidence: ["set it to 0.5 BTC instead"]
+    - doc: PM-002
+      evidence: ["Unit confusion"]
+- id: q41
+  question: "Why did no alert fire while most large orders were being rejected for exceeding the limit?"
+  kind: single-section
+  answers:
+    - doc: PM-002
+      evidence: ["the reject-rate alert excluded all \"business\" reasons"]
+    - doc: PM-002
+      evidence: ["Alerting treated `LIMIT_EXCEEDED` as always legitimate"]
+
+# --- PM-003: Rebalance storm ---
+- id: q42
+  question: "We once scaled up consumers during a lag incident and it got worse. Why?"
+  kind: single-section
+  answers:
+    - doc: PM-003
+      evidence: ["More members means longer rebalances"]
+    - doc: PM-003
+      evidence: ["Scaling up during a rebalance storm made it worse"]
+- id: q43
+  question: "What hotfix stopped the rebalance storm during the volatility spike?"
+  kind: single-section
+  answers:
+    - doc: PM-003
+      evidence: ["conflate ticks to latest per symbol per batch"]
+    - doc: PM-003
+      evidence: ["Conflation plus bulk upsert per poll"]
+
+# --- PM-004: P&L report starves the pool ---
+- id: q44
+  question: "Postgres CPU was low but orders were timing out with RISK_TIMEOUT. Has this happened before?"
+  kind: single-section
+  answers:
+    - doc: PM-004
+      evidence: ["Healthy DB CPU misled the first diagnosis"]
+- id: q45
+  question: "What did we change so that reporting queries cannot starve order traffic of connections?"
+  kind: single-section
+  answers:
+    - doc: PM-004
+      evidence: ["Separate pool (size 2) and read replica for reporting"]
+
+# --- PM-005: Redis restart ---
+- id: q46
+  question: "After Redis was rescheduled, some strikes stayed NO_PRICE for almost 20 minutes. Why so long?"
+  kind: single-section
+  answers:
+    - doc: PM-005
+      evidence: ["Market-data only writes a key when a tick arrives"]
+    - doc: PM-005
+      evidence: ["illiquid strikes stayed missing until they next traded"]
+
+# --- PM-006: Kafka broker disk full ---
+- id: q47
+  question: "What filled up the Kafka broker's disk?"
+  kind: single-section
+  answers:
+    - doc: PM-006
+      evidence: ["`retention.ms=-1`"]
+- id: q48
+  question: "When a Kafka broker's disk filled, why did order placement keep working?"
+  kind: single-section
+  answers:
+    - doc: PM-006
+      evidence: ["market-data writes Redis before producing"]
+
+# --- PM-007: OTel Collector OOM ---
+- id: q49
+  question: "How did a latency incident go unnoticed for almost an hour during a load test?"
+  kind: single-section
+  answers:
+    - doc: PM-007
+      evidence: ["Because metrics flowed through the collector, the latency alert never fired"]
+- id: q50
+  question: "What alert catches the case where the trading namespace stops sending telemetry altogether?"
+  kind: single-section
+  answers:
+    - doc: PM-007
+      evidence: ["Dead-man's-switch alert"]
+
+# --- PM-008: Node clock drift ---
+- id: q51
+  question: "Why was the worker node's clock still wrong long after it rebooted?"
+  kind: single-section
+  answers:
+    - doc: PM-008
+      evidence: ["no battery-backed hardware clock", "blocked outbound NTP"]
+- id: q52
+  question: "How far off was the clock on the bad node during the stale-price incident?"
+  kind: single-section
+  answers:
+    - doc: PM-008
+      evidence: ["+241 s"]
+
+# --- Cross-section: a diagnosis and the action it leads to, in different sections ---
+- id: q53
+  question: "Redis evictions keep climbing and orders fail with NO_PRICE. How do I confirm it is memory and what do I do?"
+  kind: cross-section
+  answers:
+    - doc: RB-006
+      evidence: ["Evictions rising: memory problem", "Delete the unbounded key family"]
+- id: q54
+  question: "A pod keeps getting OOMKilled. How do I tell a leak from a burst, and how do I stop the crash loop?"
+  kind: cross-section
+  answers:
+    - doc: RB-009
+      evidence: ["Steady climb over hours: leak", "Raise the memory limit to stop the loop"]
+- id: q55
+  question: "Pods on one node reject everything as STALE_PRICE while the feed is healthy. What is the cause and how do I recover?"
+  kind: cross-section
+  answers:
+    - doc: RB-012
+      evidence: ["every tick looks old", "Cordon the node and move pods off it"]
+- id: q56
+  question: "Market-data logs show KafkaStorageException. What should I check and how do I fix it?"
+  kind: cross-section
+  answers:
+    - doc: RB-007
+      evidence: ["go straight to broker disk usage", "Disk full: lower retention on `md.ticks.v1`"]
+- id: q57
+  question: "In the Redis restart incident, what misled the diagnosis and what did we change in the runbook?"
+  kind: cross-section
+  answers:
+    - doc: PM-005
+      evidence: ["The first check (evictions) was the wrong one", "RB-006 triage now checks uptime reset alongside evictions"]

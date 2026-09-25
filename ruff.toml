@@ -8,6 +8,6 @@ line-length = 120
 select = ["E4", "E7", "E9", "F", "B", "I"]
 
 [lint.isort]
-known-first-party = ["delta_ticker", "order_service"]
+known-first-party = ["delta_ticker", "incident_rag", "order_service"]
 # Helper modules imported by tests from their own directory.
 known-local-folder = ["conftest", "fakes", "test_payload"]

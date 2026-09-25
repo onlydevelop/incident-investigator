@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "incident-rag"
+version = "0.1.0"
+description = "Chunking and retrieval over the incident corpus, with an eval comparing chunking strategies"
+requires-python = ">=3.11"
+dependencies = [
+    "fastembed>=0.4,<1",
+    "numpy>=1.26",
+    "pyyaml>=6,<7",
+    "tiktoken>=0.7,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+incident-rag-eval = "incident_rag.evaluate:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
