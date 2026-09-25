@@ -1,6 +1,8 @@
 # docker-compose services, split so each group can be managed on its own.
 DEPS         := redis
 TICKER       := delta-ticker
+API          := symbols-api
+API_URL      := http://localhost:$(or $(API_PORT),8000)
 REDIS_CLI    := docker compose exec -T $(DEPS) redis-cli
 CACHE_PREFIX := ticker:latest:
 SYMBOLS_KEY  := ticker:symbols
@@ -18,6 +20,7 @@ endif
 .PHONY: help build up down restart status logs test \
         deps-start deps-stop deps-restart deps-status deps-logs \
         ticker-build ticker-start ticker-stop ticker-restart ticker-status ticker-logs ticker-run \
+        api-start api-stop api-restart api-status api-logs api-docs \
         cache-show cache-get \
         symbols-show symbols-add symbols-remove symbols-set symbols-clear
 
@@ -28,7 +31,7 @@ help: ## Show available targets
 
 build: ticker-build ## Build all images
 
-up: ## Build the ticker, start redis, then stream ticks into the cache
+up: ## Build the image, start redis, the ticker and the symbols API
 	docker compose up -d --build --wait
 
 down: ## Stop and remove all containers (data volumes are kept)
@@ -84,6 +87,27 @@ ticker-logs: ## Follow delta_ticker output
 
 ticker-run: ## Run delta_ticker in the foreground in docker (Ctrl+C to stop)
 	docker compose run --rm --build $(TICKER)
+
+## --- Symbols API (FastAPI, same image as the ticker) ---
+
+api-start: ## Build if needed and start the symbols API (starts redis if needed)
+	docker compose up -d --build --wait $(API)
+	@echo "Symbols API: $(API_URL)/symbols   docs: $(API_URL)/docs"
+
+api-stop: ## Stop the symbols API
+	docker compose stop $(API)
+
+api-restart: ## Rebuild and restart the symbols API (picks up code changes)
+	docker compose up -d --build --force-recreate --wait $(API)
+
+api-status: ## Show the symbols API container
+	docker compose ps $(API)
+
+api-logs: ## Follow symbols API logs
+	docker compose logs -f $(API)
+
+api-docs: ## Open the interactive API docs in a browser
+	open $(API_URL)/docs
 
 ## --- Cache (redis) ---
 

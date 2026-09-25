@@ -14,3 +14,10 @@ CACHE_TTL_SECONDS = 10
 # The Makefile's CACHE_PREFIX and SYMBOLS_KEY must match these keys.
 SYMBOLS_KEY = "ticker:symbols"
 SYMBOL_REFRESH_SECONDS = 30
+
+# Option symbols accepted by the symbols API: <C|P>-<underlying>-<strike>-<DDMMYY>, e.g. C-BTC-80000-091026.
+OPTION_SYMBOL_PATTERN = r"^[CP]-[A-Z0-9]+-\d+(\.\d+)?-\d{6}$"
+
+# Symbols API (uvicorn).
+API_HOST = os.environ.get("API_HOST", "0.0.0.0")
+API_PORT = int(os.environ.get("API_PORT", "8000"))

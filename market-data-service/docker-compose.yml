@@ -29,5 +29,28 @@ services:
       redis:
         condition: service_healthy
 
+  symbols-api:
+    # Same image as the ticker, different command.
+    build:
+      context: .
+      target: runtime
+    image: market-data/delta-ticker
+    container_name: symbols-api
+    restart: unless-stopped
+    init: true
+    command: ["delta-ticker-api"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   redis-data:

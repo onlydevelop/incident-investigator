@@ -2,18 +2,23 @@
 
 Streams live option tickers from [Delta Exchange](https://www.delta.exchange/) over a websocket, converts each update into a Kafka-ready `TickerPayload`, and caches the latest payload per symbol in Redis with a 10-second TTL.
 
-The symbols to subscribe to are also kept in Redis. The ticker re-reads them every 30 seconds, so you can add or remove symbols without restarting anything.
+The symbols to subscribe to are also kept in Redis, and a FastAPI service manages them over HTTP. The ticker re-reads them every 30 seconds, so you can add or remove symbols without restarting anything.
 
 Everything runs in Docker and is driven by `make`.
 
 ```
 Delta Exchange (wss, v2/ticker)
-        │                        ┌──── every 30s: read ticker:symbols (set, no expiry)
-        ▼                        │
-  delta-ticker container ────────┤
-        │                        └──► stdout (JSON, one line per update)
+        │
         ▼
-  redis container   key: ticker:latest:<symbol>   TTL: 10s
+  delta-ticker ──► stdout (JSON, one line per update)
+        │    ▲
+  write │    │ read every 30s
+        ▼    │
+  redis ─────┴── ticker:latest:<symbol>   latest payload, TTL 10s
+             └── ticker:symbols           set of symbols, no expiry
+                        ▲
+                        │ CRUD
+  symbols-api (FastAPI, :8000) ◄── curl / browser / other services
 ```
 
 ## Prerequisites
@@ -27,10 +32,14 @@ With Rancher Desktop, Docker usually listens on `~/.rd/docker.sock`. The Makefil
 
 ```sh
 cd market-data-service
-make up                                                        # build the ticker, start redis and the ticker
-make symbols-set SYMBOLS="C-BTC-80000-091026 P-BTC-80000-091026"  # what to subscribe to (first run only)
-make cache-show                                                # see what's cached (within ~30s)
-make down                                                      # stop everything
+make up          # build the image, start redis, the ticker and the symbols API
+
+# what to subscribe to (first run only)
+curl -X PUT localhost:8000/symbols -H 'content-type: application/json' \
+     -d '{"symbols": ["C-BTC-80000-091026", "P-BTC-80000-091026"]}'
+
+make cache-show  # see what's cached (within ~30s)
+make down        # stop everything
 ```
 
 The symbol list is stored in Redis's data volume, so you only need to set it once. It survives `make down` and restarts.
@@ -44,7 +53,7 @@ Run `make` with no arguments to list every target.
 | Command | Description |
 |---|---|
 | `make build` | Build all images |
-| `make up` | Build the ticker, start Redis (waits until healthy), start the ticker |
+| `make up` | Build the image, start Redis (waits until healthy), then the ticker and the symbols API |
 | `make down` | Stop and remove all containers. The Redis data volume is kept |
 | `make restart` | `down`, then `up` |
 | `make status` | Show all containers |
@@ -54,15 +63,17 @@ Run `make` with no arguments to list every target.
 ```sh
 $ make up
  Container market-data-redis Healthy
- Container delta-ticker Started
+ Container delta-ticker Healthy
+ Container symbols-api Healthy
 
 $ make status
-NAME                IMAGE                      STATUS                    PORTS
-delta-ticker        market-data/delta-ticker   Up 7 seconds
-market-data-redis   redis:8                    Up 12 seconds (healthy)   0.0.0.0:6379->6379/tcp
+NAME                IMAGE                      COMMAND              STATUS                    PORTS
+delta-ticker        market-data/delta-ticker   "delta-ticker"       Up 5 seconds
+market-data-redis   redis:8                    "docker-entrypoint…" Up 11 seconds (healthy)   0.0.0.0:6379->6379/tcp
+symbols-api         market-data/delta-ticker   "delta-ticker-api"   Up 5 seconds (healthy)    0.0.0.0:8000->8000/tcp
 
 $ make test
-#11 0.980 15 passed in 0.18s
+#11 0.936 29 passed in 0.54s
 ```
 
 `make test` builds the `test` stage of the Dockerfile, so a failing test fails the command.
@@ -115,6 +126,8 @@ $ make cache-get SYMBOL=C-BTC-79500-250926
 
 ### Symbols
 
+These targets write to Redis directly with `redis-cli`. They're handy for quick changes, but they skip the symbol-format check that the [Symbols API](#symbols-api) does.
+
 | Command | Description |
 |---|---|
 | `make symbols-show` | List the symbols the ticker subscribes to |
@@ -148,6 +161,89 @@ Redis is also published on `localhost:6379`, so any Redis client can read the ca
 ```sh
 redis-cli get ticker:latest:C-BTC-79500-250926
 redis-cli sadd ticker:symbols C-BTC-84000-091026 P-BTC-84000-091026
+```
+
+### Symbols API
+
+| Command | Description |
+|---|---|
+| `make api-start` | Build if needed and start the API (starts Redis too if it isn't running) |
+| `make api-stop` | Stop the API |
+| `make api-restart` | Rebuild and recreate the API. Use this after changing code |
+| `make api-status` | Show the API container |
+| `make api-logs` | Follow the API's logs |
+| `make api-docs` | Open the interactive docs (Swagger UI) in a browser |
+
+The ticker and the API share one image. `make ticker-restart` rebuilds it but only recreates the ticker, so run `make api-restart` as well (or `make restart`) after changing shared code.
+
+## Symbols API
+
+A FastAPI service for creating, reading, updating and deleting the subscribed option symbols. It runs in the `symbols-api` container on `http://localhost:8000`. Interactive docs are at [`/docs`](http://localhost:8000/docs) and the OpenAPI schema is at `/openapi.json`.
+
+Writes go to the `ticker:symbols` Redis set. The ticker applies them on its next refresh, within 30 seconds.
+
+| Method | Path | Body | Success | Errors |
+|---|---|---|---|---|
+| `GET` | `/symbols` | | `200` all symbols | |
+| `GET` | `/symbols/{symbol}` | | `200` | `404` not subscribed |
+| `POST` | `/symbols` | `{"symbols": [...]}` | `201` adds to the list, returns the full list | `422` invalid symbol or empty list |
+| `PUT` | `/symbols` | `{"symbols": [...]}` | `200` replaces the whole list atomically, returns it | `422` invalid symbol or empty list |
+| `PUT` | `/symbols/{symbol}` | | `201` added, `200` already there | `422` invalid symbol |
+| `DELETE` | `/symbols/{symbol}` | | `204` removed | `404` not subscribed |
+| `DELETE` | `/symbols` | | `204` all removed | |
+| `GET` | `/health` | | `200` if Redis is reachable | `503` |
+
+Any endpoint returns `503` with `Redis unavailable: ...` if Redis can't be reached.
+
+**Validation:** only option symbols are accepted, in the form `<C|P>-<underlying>-<strike>-<DDMMYY>`, e.g. `C-BTC-80000-091026`. Anything else, such as the perpetual `BTCUSD`, gets a `422`. Duplicates in a request body are dropped. The API doesn't check that a symbol is actually listed on Delta; a valid-looking but unlisted symbol is accepted, and the ticker just never receives updates for it.
+
+### Examples
+
+```sh
+# Replace the whole list
+$ curl -X PUT localhost:8000/symbols -H 'content-type: application/json' \
+       -d '{"symbols": ["C-BTC-80000-091026", "P-BTC-80000-091026"]}'
+{"symbols":["C-BTC-80000-091026","P-BTC-80000-091026"],"count":2,"note":"The ticker applies changes within 30s."}
+
+# Add to the list
+$ curl -X POST localhost:8000/symbols -H 'content-type: application/json' \
+       -d '{"symbols": ["C-BTC-84000-091026"]}'
+{"symbols":["C-BTC-80000-091026","C-BTC-84000-091026","P-BTC-80000-091026"],"count":3,"note":"The ticker applies changes within 30s."}
+
+# List
+$ curl localhost:8000/symbols
+{"symbols":["C-BTC-80000-091026","C-BTC-84000-091026","P-BTC-80000-091026"],"count":3,"note":"The ticker applies changes within 30s."}
+
+# Check one
+$ curl localhost:8000/symbols/C-BTC-84000-091026
+{"symbol":"C-BTC-84000-091026"}
+
+# Add one (idempotent: 201 the first time, 200 after)
+$ curl -X PUT -w '%{http_code}\n' localhost:8000/symbols/P-BTC-84000-091026
+{"symbol":"P-BTC-84000-091026"}201
+
+# Remove one
+$ curl -X DELETE -w '%{http_code}\n' localhost:8000/symbols/C-BTC-84000-091026
+204
+
+$ curl localhost:8000/symbols/C-BTC-84000-091026
+{"detail":"C-BTC-84000-091026 is not subscribed"}
+
+# Remove all
+$ curl -X DELETE -w '%{http_code}\n' localhost:8000/symbols
+204
+
+# Rejected: not an option symbol
+$ curl -X POST -w '\n%{http_code}\n' localhost:8000/symbols -H 'content-type: application/json' \
+       -d '{"symbols": ["BTCUSD"]}'
+{"detail":[{"type":"string_pattern_mismatch","loc":["body","symbols",0],"msg":"String should match pattern '^[CP]-[A-Z0-9]+-\\d+(\\.\\d+)?-\\d{6}$'","input":"BTCUSD", ...}]}
+422
+```
+
+Once a change is applied, the ticker logs it:
+
+```
+delta-ticker  | Symbols changed: +['C-BTC-80000-091026', 'P-BTC-80000-091026'] -['C-BTC-79500-250926', 'P-BTC-79500-250926']
 ```
 
 ## Checking that it works
@@ -236,8 +332,10 @@ export DOCKER_HOST=unix://$HOME/.rd/docker.sock
 | Redis key names | `CACHE_KEY_PREFIX`, `SYMBOLS_KEY` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py). Keep the Makefile's `CACHE_PREFIX` / `SYMBOLS_KEY` in sync | `ticker:latest:`, `ticker:symbols` |
 | Delta websocket URL | `WEBSOCKET_URL` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `wss://socket.india.delta.exchange` |
 | Redis connection | `REDIS_URL` environment variable, read in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `redis://redis:6379/0` in Docker, `redis://localhost:6379/0` otherwise |
+| Accepted symbol format | `OPTION_SYMBOL_PATTERN` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `<C\|P>-<underlying>-<strike>-<DDMMYY>` |
+| Symbols API host port | `API_PORT` environment variable (used by docker-compose and the Makefile) | `8000` |
 
-Changing a value in `config.py` needs a rebuild: `make ticker-restart`.
+Changing a value in `config.py` needs a rebuild: `make restart`, or `make ticker-restart` and `make api-restart`.
 | Redis host port | `REDIS_PORT` environment variable | `6379` |
 
 Option symbols follow `<C|P>-<underlying>-<strike>-<DDMMYY>`, e.g. `C-BTC-79500-250926` is a BTC call, strike 79,500, expiring 25 Sep 2026. Expired symbols stop updating, so swap them out as options expire, e.g. `make symbols-remove SYMBOLS=...` and `make symbols-add SYMBOLS=...`. No restart is needed.
@@ -274,20 +372,22 @@ For Kafka, `TickerPayload.key()` returns the symbol as the message key, which ke
 ```
 market-data-service/
 ├── Makefile
-├── docker-compose.yml       # redis + delta-ticker services
+├── docker-compose.yml       # redis, delta-ticker and symbols-api services
 ├── Dockerfile               # stages: base, test, runtime
-├── pyproject.toml           # package metadata, dependencies, `delta-ticker` command
+├── pyproject.toml           # package metadata, dependencies, `delta-ticker` and `delta-ticker-api` commands
 ├── src/delta_ticker/
-│   ├── __main__.py          # entry point: wiring
-│   ├── config.py            # constants: URLs, Redis keys, TTL, refresh interval
+│   ├── __main__.py          # ticker entry point: wiring
+│   ├── api.py               # symbols API (FastAPI) + its entry point
+│   ├── config.py            # constants: URLs, Redis keys, TTL, refresh interval, symbol format, API port
 │   ├── client.py            # DeltaTickerClient: websocket subscribe/unsubscribe + parse
 │   ├── payload.py           # TickerPayload: Kafka-ready record
 │   ├── cache.py             # TickerCache: latest payload per symbol in Redis
-│   └── symbols.py           # SymbolRegistry + SymbolRefresher: symbol list from Redis, every 30s
+│   └── symbols.py           # SymbolRegistry (symbol set CRUD) + SymbolRefresher (re-read every 30s)
 ├── tests/
 │   ├── test_payload.py
 │   ├── test_cache.py
-│   └── test_symbols.py
+│   ├── test_symbols.py
+│   └── test_api.py
 └── experiment.ipynb         # original exploration notebook (standalone)
 ```
 
@@ -301,4 +401,5 @@ pip install -e ".[dev]"
 pytest
 make deps-start                          # Redis still runs in Docker
 delta-ticker                             # connects to redis://localhost:6379/0
+delta-ticker-api                         # in another terminal; serves on :8000 (stop the symbols-api container first)
 ```

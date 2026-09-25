@@ -10,13 +10,16 @@ requires-python = ">=3.11"
 dependencies = [
     "websocket-client>=1.9,<2",
     "redis>=6,<9",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx2>=2", "fakeredis>=2.26"]
 
 [project.scripts]
 delta-ticker = "delta_ticker.__main__:main"
+delta-ticker-api = "delta_ticker.api:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

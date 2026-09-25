@@ -9,7 +9,8 @@ from delta_ticker.config import REDIS_URL, SYMBOL_REFRESH_SECONDS, SYMBOLS_KEY
 class SymbolRegistry:
     """The symbols to subscribe to, kept in a Redis set with no expiry.
 
-    Manage it with SADD / SREM / DEL on `KEY`, e.g. via `make symbols-add`.
+    Manage it through the symbols API, `make symbols-*`, or SADD / SREM / DEL on `KEY`.
+    Apart from `get`, methods raise redis.RedisError so callers can report failures.
     """
 
     KEY = SYMBOLS_KEY
@@ -24,11 +25,39 @@ class SymbolRegistry:
     def get(self) -> Optional[list[str]]:
         """Sorted symbols, or None if Redis couldn't be read (so callers keep what they have)."""
         try:
-            members = self.client.smembers(self.KEY)
+            return self.members()
         except redis.RedisError as e:
             print(f"Failed to read symbols from {self.KEY}: {e!r}")
             return None
+
+    def members(self) -> list[str]:
+        members = self.client.smembers(self.KEY)
         return sorted(m.decode("utf-8") if isinstance(m, bytes) else m for m in members)
+
+    def contains(self, symbol: str) -> bool:
+        return bool(self.client.sismember(self.KEY, symbol))
+
+    def add(self, symbols: list[str]) -> int:
+        """Adds symbols; returns how many were new."""
+        return self.client.sadd(self.KEY, *symbols) if symbols else 0
+
+    def remove(self, symbols: list[str]) -> int:
+        """Removes symbols; returns how many were present."""
+        return self.client.srem(self.KEY, *symbols) if symbols else 0
+
+    def replace(self, symbols: list[str]):
+        """Swaps the whole set in one transaction, so a refresh never sees it half-written."""
+        pipe = self.client.pipeline(transaction=True)
+        pipe.delete(self.KEY)
+        if symbols:
+            pipe.sadd(self.KEY, *symbols)
+        pipe.execute()
+
+    def clear(self):
+        self.client.delete(self.KEY)
+
+    def ping(self) -> bool:
+        return bool(self.client.ping())
 
 
 class SymbolRefresher(threading.Thread):
