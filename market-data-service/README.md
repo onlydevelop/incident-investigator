@@ -114,6 +114,78 @@ Redis is also published on `localhost:6379`, so any Redis client can read the ca
 redis-cli get ticker:latest:C-BTC-79500-250926
 ```
 
+## Checking that it works
+
+### 1. Is data being fetched?
+
+```sh
+make ticker-logs
+```
+
+A healthy ticker logs `Socket opened`, then a subscriptions message listing your symbols, then one JSON line per update:
+
+```
+delta-ticker  | Socket opened
+delta-ticker  | {
+delta-ticker  |   "channels": [
+delta-ticker  |     {
+delta-ticker  |       "name": "v2/ticker",
+delta-ticker  |       "symbols": ["C-BTC-79500-250926", "P-BTC-79500-250926"]
+delta-ticker  |     }
+delta-ticker  |   ],
+delta-ticker  |   "type": "subscriptions"
+delta-ticker  | }
+delta-ticker  | {"source":"delta.exchange","symbol":"P-BTC-79500-250926", ... }
+delta-ticker  | {"source":"delta.exchange","symbol":"C-BTC-79500-250926", ... }
+```
+
+- **Subscriptions message but no JSON lines:** the symbols aren't trading, most likely because they've expired. See [Configuration](#configuration).
+- **An `"error"` in the subscriptions message:** Delta rejected the subscription, for example because of a wrong channel name or an unknown symbol.
+
+### 2. Is the cache being filled?
+
+```sh
+make cache-show
+```
+
+```
+ticker:latest:C-BTC-79500-250926  ttl=5s
+ticker:latest:P-BTC-79500-250926  ttl=10s
+```
+
+Run it a few times. Each symbol's TTL should keep jumping back towards 10s, because every update resets it. If a TTL keeps counting down and the key then disappears, updates for that symbol have stopped.
+
+### 3. Is the cached data fresh?
+
+```sh
+make cache-get SYMBOL=C-BTC-79500-250926
+```
+
+Compare the payload's `timestamp_us` field (microseconds since the epoch) with the current time. It should be only a few seconds old.
+
+### 4. Watch the Redis writes live
+
+```sh
+docker compose exec redis redis-cli monitor
+```
+
+Each `SET "ticker:latest:..." ... "EX" "10"` line is the ticker writing to the cache. Press Ctrl+C to stop.
+
+With Rancher Desktop, plain `docker` commands need `DOCKER_HOST` set first. The Makefile does this for you, but a raw `docker compose` command doesn't:
+
+```sh
+export DOCKER_HOST=unix://$HOME/.rd/docker.sock
+```
+
+### Troubleshooting
+
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| `cache empty`, ticker logs are streaming | The ticker can't reach Redis. Look for `Failed to cache ...` in the logs | `make deps-status`, then `make deps-restart` |
+| `cache empty`, no ticker logs | The ticker isn't running | `make status`, then `make ticker-restart` |
+| Subscriptions message, but no updates | The symbols have expired or aren't trading | Update `OPTION_SYMBOLS`, then `make ticker-restart` |
+| `failed to connect to the docker API` | Docker isn't running, or `DOCKER_HOST` isn't set for a raw `docker` command | Start Docker Desktop or Rancher Desktop. Use the `make` targets, or export `DOCKER_HOST` as shown above |
+
 ## Configuration
 
 | What | Where | Default |
