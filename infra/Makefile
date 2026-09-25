@@ -1,4 +1,4 @@
-# Shared infrastructure: redis, kafka, postgres on the `portfolio` docker network.
+# Shared infrastructure: redis, kafka, postgres (and opensearch, for ../rag) on the `portfolio` docker network.
 DEPS        := redis kafka postgres
 REDIS_CLI   := docker compose exec -T redis redis-cli
 KAFKA_BIN   := docker compose exec -T kafka /opt/kafka/bin
@@ -18,7 +18,7 @@ endif
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help up down restart status logs \
+.PHONY: help up down restart status logs search-up search-stop \
         redis-cli psql \
         topics-create topics-list topic-describe topic-tail
 
@@ -42,6 +42,14 @@ status: ## Show the infra containers
 
 logs: ## Follow logs from all infra containers (SERVICE=<name> for one)
 	docker compose logs -f $(SERVICE)
+
+## --- OpenSearch (only the RAG layer uses it) ---
+
+search-up: ## Start postgres and opensearch for ../rag, wait until healthy
+	docker compose up -d --wait postgres opensearch
+
+search-stop: ## Stop opensearch (about 1 GB of memory) without touching the rest
+	docker compose stop opensearch
 
 ## --- Clients ---
 

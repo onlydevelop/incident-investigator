@@ -1,6 +1,6 @@
 # Shared infrastructure for every service in this repo.
 # Services join the `portfolio` network (external in their own compose files) and reach
-# these containers by service name: redis:6379, kafka:9092, postgres:5432.
+# these containers by service name: redis:6379, kafka:9092, postgres:5432, opensearch:9200.
 name: infra
 
 services:
@@ -55,7 +55,10 @@ services:
       start_period: 10s
 
   postgres:
-    image: postgres:18
+    # Postgres 18 with the pgvector extension, for the RAG layer's embeddings (../rag). The trixie
+    # variant matches postgres:18's Debian and glibc, so the existing postgres-data volume keeps its
+    # collation version; the default pgvector tag is bookworm and would warn of a collation mismatch.
+    image: pgvector/pgvector:pg18-trixie
     container_name: infra-postgres
     restart: unless-stopped
     environment:
@@ -73,6 +76,29 @@ services:
       timeout: 3s
       retries: 10
 
+  opensearch:
+    # For the RAG layer's BM25 + vector hybrid search (../rag). Not in `make up`, which starts only
+    # what the services need; `make search-up` starts it.
+    image: opensearchproject/opensearch:3
+    container_name: infra-opensearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      # Local development only: plain HTTP, no users. Never expose this port beyond localhost.
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "127.0.0.1:${OPENSEARCH_PORT:-9200}:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs localhost:9200/_cluster/health?wait_for_status=yellow >/dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
 networks:
   default:
     name: portfolio
@@ -81,3 +107,4 @@ volumes:
   redis-data:
   kafka-data:
   postgres-data:
+  opensearch-data:

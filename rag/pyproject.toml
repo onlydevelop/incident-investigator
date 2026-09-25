@@ -10,6 +10,9 @@ requires-python = ">=3.11"
 dependencies = [
     "fastembed>=0.4,<1",
     "numpy>=1.26",
+    "opensearch-py>=3,<4",
+    "pgvector>=0.4,<1",
+    "psycopg[binary]>=3.2,<4",
     "pyyaml>=6,<7",
     "tiktoken>=0.7,<1",
 ]
@@ -19,6 +22,8 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 incident-rag-eval = "incident_rag.evaluate:main"
+incident-rag-ingest = "incident_rag.ingest:main"
+incident-rag-search = "incident_rag.search:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -26,3 +31,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "stores: needs pgvector and OpenSearch from ../infra (make -C ../infra search-up); skipped if unreachable",
+]

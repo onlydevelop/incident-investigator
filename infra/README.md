@@ -1,6 +1,6 @@
 # infra
 
-The shared infrastructure for every service in this repo: Redis, Kafka and Postgres, run as one Docker Compose project called `infra`.
+The shared infrastructure for every service in this repo: Redis, Kafka and Postgres, run as one Docker Compose project called `infra`. OpenSearch is here too, for the RAG layer in [`../rag`](../rag), but it only starts when asked for.
 
 Each service keeps its own `docker-compose.yml` with only its app containers. Those join the `portfolio` Docker network, which this stack creates, and reach the infrastructure by service name.
 
@@ -35,7 +35,12 @@ You usually don't need to run this yourself. Each service's `make up` (and its `
 |---|---|---|---|---|
 | Redis 8 (AOF persistence) | `infra-redis` | `redis://redis:6379/0` | `localhost:6379` | `infra_redis-data` |
 | Kafka 4.1 (single-node KRaft, no ZooKeeper) | `infra-kafka` | `kafka:9092` | `localhost:9094` | `infra_kafka-data` |
-| Postgres 18 | `infra-postgres` | `postgres://portfolio:portfolio@postgres:5432/portfolio` | `localhost:5432` | `infra_postgres-data` |
+| Postgres 18 with pgvector | `infra-postgres` | `postgres://portfolio:portfolio@postgres:5432/portfolio` | `localhost:5432` | `infra_postgres-data` |
+| OpenSearch 3 (single node, security off; `make search-up` only) | `infra-opensearch` | `http://opensearch:9200` | `localhost:9200` (bound to 127.0.0.1) | `infra_opensearch-data` |
+
+Postgres runs the `pgvector/pgvector:pg18-trixie` image: Postgres 18 with the `vector` extension, which `../rag` uses for embeddings. Use the `-trixie` tag. It's built on the same Debian and glibc as the `postgres:18` image the data volume was created with. The default `pg18` tag is built on bookworm, whose older glibc makes Postgres warn of a collation version mismatch, and text indexes built under one version can sort wrongly under the other.
+
+OpenSearch takes about 1 GB of memory, so `make up` leaves it out. Only `../rag` needs it. Its security plugin is disabled so it can run over plain HTTP without users, which is why its port is bound to localhost only.
 
 Kafka has two listeners because a client connects to whatever address the broker advertises. Containers must use `kafka:9092`, and tools on your machine must use `localhost:9094`. Using the wrong one connects at first and then fails with the other address.
 
@@ -48,6 +53,8 @@ Run `make` with no arguments to list every target.
 | `make up` | Start everything, wait until healthy, then create the topics in `TOPICS` |
 | `make down` | Stop and remove the containers. The data volumes are kept |
 | `make restart` | Restart the containers |
+| `make search-up` | Start Postgres and OpenSearch for `../rag`, wait until healthy |
+| `make search-stop` | Stop OpenSearch only |
 | `make status` | Show the containers |
 | `make logs` | Follow all logs. `make logs SERVICE=kafka` follows one |
 | `make redis-cli` | Open `redis-cli` |

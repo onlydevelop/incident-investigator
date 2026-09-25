@@ -1,11 +1,13 @@
 """Compare chunking strategies on the incident corpus.
 
-    python -m incident_rag.evaluate                       # metrics table for every strategy
+    python -m incident_rag.evaluate                       # every strategy, in-memory cosine search
+    python -m incident_rag.evaluate --strategies heading-merged+ctx \
+        --backends pgvector opensearch-bm25 opensearch-hybrid   # compare retrieval backends
     python -m incident_rag.evaluate --misses heading+ctx  # questions a strategy got wrong at k=3
     python -m incident_rag.evaluate --dump heading+ctx    # print a strategy's chunks
 
-Every strategy is embedded with the same model and searched with the same exact cosine index, so the
-chunking is the only thing that changes between rows.
+Every strategy is embedded once with the same model, and every backend gets the same chunks and the same
+vectors, so each row differs from another only in its chunking or its retrieval backend.
 """
 
 import argparse
@@ -15,9 +17,10 @@ from statistics import mean
 
 import yaml
 
+from incident_rag.backends import BACKENDS, Backends, stores_for
 from incident_rag.chunking import STRATEGIES, Chunk, chunk_corpus, count_tokens
 from incident_rag.corpus import Document, load_corpus
-from incident_rag.index import VectorIndex, embed_queries, load_embedder
+from incident_rag.index import Retriever, embed_passages, embed_queries, load_embedder
 
 RAG_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_CORPUS = RAG_DIR.parent / "incident-corpus"
@@ -109,12 +112,14 @@ class QuestionResult:
         return sum(chunk.tokens for chunk in self.ranked[:k])
 
 
-def run_strategy(index: VectorIndex, questions: list[Question], query_vectors) -> list[QuestionResult]:
+def run_questions(
+    retriever: Retriever, chunks: list[Chunk], questions: list[Question], query_vectors
+) -> list[QuestionResult]:
     results = []
     for question, vector in zip(questions, query_vectors, strict=True):
-        ranked = [chunk for chunk, _ in index.search(vector, SEARCH_DEPTH)]
+        ranked = [chunk for chunk, _ in retriever.search(question.question, vector, SEARCH_DEPTH)]
         rank = next((i for i, chunk in enumerate(ranked, start=1) if answers(chunk, question)), None)
-        answerable = any(answers(chunk, question) for chunk in index.chunks)
+        answerable = any(answers(chunk, question) for chunk in chunks)
         results.append(QuestionResult(question, ranked, rank, answerable))
     return results
 
@@ -181,6 +186,9 @@ def main() -> None:
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--questions", type=Path, default=DEFAULT_QUESTIONS)
     parser.add_argument("--strategies", nargs="+", choices=STRATEGIES, default=list(STRATEGIES))
+    parser.add_argument(
+        "--backends", nargs="+", choices=BACKENDS, default=["memory"], help="retrieval backends to compare"
+    )
     parser.add_argument("--misses", choices=STRATEGIES, help="list questions this strategy misses at k=3")
     parser.add_argument("--dump", choices=STRATEGIES, help="print this strategy's chunks and exit")
     args = parser.parse_args()
@@ -196,12 +204,22 @@ def main() -> None:
 
     strategies = [args.misses] if args.misses else args.strategies
     rows = {}
-    for name in strategies:
-        chunks = chunk_corpus(docs, name)
-        rows[name] = (chunks, run_strategy(VectorIndex(embedder, chunks), questions, query_vectors))
+    with Backends() as backends:
+        for strategy in strategies:
+            chunks = chunk_corpus(docs, strategy)
+            vectors = embed_passages(embedder, chunks)
+            backends.ingest(stores_for(args.backends), strategy, chunks, vectors)
+            for backend in args.backends:
+                retriever = backends.retriever(backend, strategy, chunks, vectors)
+                # One backend keeps the table as it was: rows named by strategy alone.
+                name = strategy if len(args.backends) == 1 else f"{strategy} · {backend}"
+                rows[name] = (chunks, run_questions(retriever, chunks, questions, query_vectors))
 
     if args.misses:
-        print_misses(rows[args.misses][1])
+        for name, (_, results) in rows.items():
+            if len(rows) > 1:
+                print(f"## {name}")
+            print_misses(results)
     else:
         print(f"{len(docs)} documents, {len(questions)} questions\n")
         print_summary(rows)

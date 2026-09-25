@@ -32,6 +32,10 @@ class Chunk:
     text: str
     # Heading path below the document title, e.g. "Triage"; "" for fixed-size chunks.
     section: str
+    # From the document's frontmatter, so stores can filter on them.
+    doc_type: str = ""
+    services: tuple[str, ...] = ()
+    severity: str = ""
 
     @property
     def tokens(self) -> int:
@@ -44,6 +48,19 @@ def count_tokens(text: str) -> int:
 
 def _embedded_text(context: str, content: str, add_context: bool) -> str:
     return f"{context}\n\n{content}" if add_context else content
+
+
+def _chunk(doc: Document, chunk_id: str, content: str, text: str, section: str) -> Chunk:
+    return Chunk(
+        chunk_id=chunk_id,
+        doc_id=doc.doc_id,
+        content=content,
+        text=text,
+        section=section,
+        doc_type=doc.meta.get("type", ""),
+        services=tuple(doc.meta.get("services", ())),
+        severity=doc.meta.get("severity", ""),
+    )
 
 
 # --- Fixed-size ---
@@ -63,13 +80,7 @@ def fixed_size_chunks(doc: Document, size: int, overlap: int, add_context: bool 
     for i, start in enumerate(starts):
         content = ENCODING.decode(tokens[start : start + size])
         chunks.append(
-            Chunk(
-                chunk_id=f"{doc.doc_id}#f{i}",
-                doc_id=doc.doc_id,
-                content=content,
-                text=_embedded_text(doc.title, content, add_context),
-                section="",
-            )
+            _chunk(doc, f"{doc.doc_id}#f{i}", content, _embedded_text(doc.title, content, add_context), section="")
         )
     return chunks
 
@@ -194,15 +205,8 @@ def heading_chunks(doc: Document, min_tokens: int = 40, max_tokens: int = 300, a
         pieces = _split_large(body, max_tokens - count_tokens(f"{heading}\n")) if body else [""]
         for piece in pieces:
             content = f"{heading}\n{piece}".strip() if heading else piece
-            chunks.append(
-                Chunk(
-                    chunk_id=f"{doc.doc_id}#h{len(chunks)}",
-                    doc_id=doc.doc_id,
-                    content=content,
-                    text=_embedded_text(breadcrumb, content, add_context),
-                    section=label,
-                )
-            )
+            chunk_id = f"{doc.doc_id}#h{len(chunks)}"
+            chunks.append(_chunk(doc, chunk_id, content, _embedded_text(breadcrumb, content, add_context), label))
     return chunks
 
 
