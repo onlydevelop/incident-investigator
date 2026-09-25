@@ -66,6 +66,8 @@ def test_create_rolls_back_when_market_data_fails(store):
     {"symbol": CALL, "side": "buy", "qty": 0},
     {"symbol": CALL, "side": "buy", "qty": -1},
     {"symbol": CALL, "side": "buy"},
+    {"symbol": CALL, "side": "buy", "quantity": 1},
+    {"symbol": CALL, "side": "buy", "qty": 1, "entry_price": 100},
 ])
 def test_create_rejects_invalid_body(client, symbols, body):
     assert client.post("/positions", json=body).status_code == 422
@@ -101,6 +103,28 @@ def test_list_with_filters(client, store, later):
     assert [p["id"] for p in client.get("/positions", params={"symbol": PUT}).json()["positions"]] == [2]
     assert [p["id"] for p in client.get("/positions", params={"status": "pending"}).json()["positions"]] == [1]
     assert client.get("/positions", params={"status": "closed"}).status_code == 422
+    assert client.get("/positions", params={"symbol": "BTCUSD"}).status_code == 422
+    assert client.get("/positions", params={"side": "buy"}).status_code == 422
+
+
+def test_list_count_matches_positions(client):
+    assert client.get("/positions").json() == {"positions": [], "count": 0}
+    create(client)
+    body = client.get("/positions").json()
+    assert body["count"] == len(body["positions"]) == 1
+
+
+def test_openapi_documents_request_and_error_models(client):
+    spec = client.get("/openapi.json").json()
+    schemas = spec["components"]["schemas"]
+    post = spec["paths"]["/positions"]["post"]
+
+    assert post["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/PositionCreate")
+    assert post["responses"]["201"]["content"]["application/json"]["schema"]["$ref"].endswith("/PositionResponse")
+    assert post["responses"]["502"]["content"]["application/json"]["schema"]["$ref"].endswith("/ErrorResponse")
+    assert "404" in spec["paths"]["/positions/{position_id}"]["get"]["responses"]
+    assert schemas["PositionCreate"]["additionalProperties"] is False
+    assert "count" in schemas["PositionListResponse"]["properties"]
 
 
 def test_delete(client):

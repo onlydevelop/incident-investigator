@@ -61,6 +61,8 @@ Any endpoint returns `503` with `Postgres unavailable: ...` if Postgres can't be
 | `side` | `buy` or `sell` |
 | `qty` | Greater than 0. Decimals are allowed |
 
+Unknown fields are rejected with a `422`, both in the body (e.g. `quantity` or `entry_price`) and in the `GET /positions` query string (e.g. `?side=buy`). That way a typo fails loudly instead of being silently ignored.
+
 **Position fields**
 
 | Field | Description |
@@ -192,12 +194,13 @@ order-service/
 ├── Dockerfile               # stages: base, test, runtime
 ├── pyproject.toml           # `order-service-api` and `order-service-updater` commands
 ├── src/order_service/
-│   ├── api.py               # FastAPI: /positions create/list/get/delete, /health
+│   ├── api.py               # FastAPI: /positions create/list/get/delete, /health (sync handlers)
+│   ├── schemas.py           # Pydantic v2 request/response models: PositionCreate, PositionFilter, PositionResponse, ...
 │   ├── updater.py           # PositionUpdater: Kafka consumer that applies ticks
 │   ├── store.py             # PositionStore: Postgres queries, including the per-tick UPDATEs
 │   ├── schema.sql           # positions table
 │   ├── market_data.py       # SymbolsClient: subscribe a symbol in market-data-service
-│   ├── models.py            # Position, Side, Status
+│   ├── models.py            # domain types: Position (a table row), Side, Status
 │   └── config.py            # URLs, topic, consumer group, symbol format, port
 └── tests/
     ├── conftest.py          # throwaway Postgres schema per run
