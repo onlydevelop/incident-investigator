@@ -16,7 +16,7 @@ endif
 .DEFAULT_GOAL := help
 .PHONY: help up down restart \
         deps-start deps-stop deps-restart deps-status deps-logs \
-        ticker-build ticker-start ticker-stop ticker-restart ticker-status ticker-logs ticker-run-local
+        ticker-build ticker-start ticker-stop ticker-restart ticker-status ticker-logs ticker-run-local test
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
@@ -68,4 +68,9 @@ ticker-logs: ## Follow delta_ticker output
 	docker compose logs -f $(TICKER)
 
 ticker-run-local: ## Run delta_ticker on the host, in the foreground (Ctrl+C to stop)
-	$(PYTHON) -u delta_ticker.py
+	PYTHONPATH=src $(PYTHON) -u -m delta_ticker
+
+## --- Development ---
+
+test: ## Run unit tests
+	$(PYTHON) -m pytest

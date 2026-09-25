@@ -6,12 +6,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY ticker_payload.py delta_ticker_client.py delta_ticker.py ./
+COPY pyproject.toml .
+COPY src/ src/
+RUN pip install .
 
 RUN useradd --create-home --uid 10001 app
 USER app
 
-CMD ["python", "delta_ticker.py"]
+CMD ["delta-ticker"]

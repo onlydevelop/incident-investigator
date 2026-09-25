@@ -1,6 +1,9 @@
-.run/
-__pycache__/
-*.pyc
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/
+build/
+.pytest_cache/
+tests/
 *.ipynb
 .ipynb_checkpoints/
 docker-compose.yml

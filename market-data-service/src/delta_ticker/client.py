@@ -2,7 +2,7 @@ import websocket
 import json
 from typing import Callable, Optional
 
-from ticker_payload import TickerPayload
+from delta_ticker.payload import TickerPayload
 
 # Public websocket endpoint (no authentication required for ticker channel)
 WEBSOCKET_URL = "wss://socket.india.delta.exchange"

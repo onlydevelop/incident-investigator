@@ -1,4 +1,4 @@
-from delta_ticker_client import DeltaTickerClient
+from delta_ticker.client import DeltaTickerClient
 
 # Replace with your list of option symbols, or use an option-chain shorthand like "BTC-150426"
 OPTION_SYMBOLS = [
@@ -6,5 +6,10 @@ OPTION_SYMBOLS = [
     "P-BTC-79500-250926",
 ]
 
-if __name__ == "__main__":
+
+def main():
     DeltaTickerClient(OPTION_SYMBOLS).run()
+
+
+if __name__ == "__main__":
+    main()
