@@ -63,6 +63,7 @@ Run `make` with no arguments to list every target.
 | `make status` | Show this service's containers |
 | `make logs` | Follow logs from this service's containers |
 | `make test` | Run the unit tests inside Docker |
+| `make coverage` | Run the tests with a branch-coverage report in the terminal and in `htmlcov/`. Fails below the floor in `pyproject.toml` (80%; currently 83%) |
 
 ```sh
 $ make up

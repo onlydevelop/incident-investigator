@@ -2,11 +2,12 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from conftest import TEST_DATABASE_URL
-from fakes import CALL, FakeSymbols
 from order_service import PositionStore, SymbolsClient
 from order_service import api as api_module
 from order_service import store as store_module
+
+from conftest import TEST_DATABASE_URL
+from fakes import CALL, FakeSymbols
 
 
 @pytest.mark.db

@@ -1,6 +1,7 @@
 import redis
 
 from delta_ticker import TickerCache, TickerPayload
+
 from test_payload import MESSAGE
 
 

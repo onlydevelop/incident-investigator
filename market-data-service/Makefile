@@ -20,7 +20,7 @@ endif
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down restart status logs test \
+.PHONY: help build up down restart status logs test coverage \
         deps-start deps-stop deps-restart deps-status deps-logs \
         ticker-build ticker-start ticker-stop ticker-restart ticker-status ticker-logs ticker-run \
         api-start api-stop api-restart api-status api-logs api-docs \
@@ -51,6 +51,12 @@ logs: ## Follow logs from all containers
 
 test: ## Run unit tests in docker
 	docker build --target test .
+
+coverage: ## Run the tests with a coverage report (terminal, plus htmlcov/index.html); fails under the floor in pyproject.toml
+	docker build --target test -t market-data/delta-ticker-test .
+	docker run --rm -v "$(CURDIR)/htmlcov:/app/htmlcov" market-data/delta-ticker-test \
+		python -m pytest -q -p no:cacheprovider --cov --cov-report=term-missing --cov-report=html:htmlcov
+	@echo "HTML report: $(CURDIR)/htmlcov/index.html"
 
 ## --- Dependencies (shared infra in ../infra: redis, kafka, postgres) ---
 

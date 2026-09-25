@@ -1,7 +1,8 @@
-import websocket
 import json
 import threading
 from typing import Callable, Optional
+
+import websocket
 
 from delta_ticker.config import WEBSOCKET_URL
 from delta_ticker.payload import TickerPayload

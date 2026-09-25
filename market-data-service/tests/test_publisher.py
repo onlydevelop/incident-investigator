@@ -1,6 +1,7 @@
 from confluent_kafka import KafkaError, KafkaException
 
 from delta_ticker import TickerPayload, TickerPublisher
+
 from test_payload import MESSAGE
 
 

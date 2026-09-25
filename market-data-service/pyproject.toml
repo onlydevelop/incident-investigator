@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx2>=2", "fakeredis>=2.26"]
+dev = ["pytest>=8", "pytest-cov>=6", "httpx2>=2", "fakeredis>=2.26"]
 
 [project.scripts]
 delta-ticker = "delta_ticker.__main__:main"
@@ -28,3 +28,16 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["delta_ticker"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    'if __name__ == "__main__":',
+]
+# Floor, not target: currently 82%. __main__.py (wiring) and the websocket callbacks in client.py are
+# untested. Raise this as tests are added; `make coverage` and CI fail below it.
+fail_under = 80

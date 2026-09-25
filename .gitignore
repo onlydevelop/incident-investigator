@@ -3,3 +3,5 @@
 **/*.run/
 **/htmlcov/
 **/.coverage
+**/coverage.xml
+**/junit.xml

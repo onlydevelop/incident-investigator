@@ -4,9 +4,10 @@ import psycopg
 import pytest
 from confluent_kafka import KafkaError
 
-from fakes import CALL, FakeConsumer, FakeKafkaError, FakeMessage, tick_bytes
 from order_service import PositionUpdater, Side, Status
 from order_service import updater as updater_module
+
+from fakes import CALL, FakeConsumer, FakeKafkaError, FakeMessage, tick_bytes
 
 
 class TestHandle:

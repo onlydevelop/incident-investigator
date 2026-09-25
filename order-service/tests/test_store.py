@@ -2,8 +2,9 @@ from decimal import Decimal
 
 import pytest
 
-from fakes import CALL, PUT
 from order_service import Side, Status
+
+from fakes import CALL, PUT
 
 
 class TestCrud:

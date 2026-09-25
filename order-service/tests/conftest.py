@@ -17,10 +17,11 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg_pool import ConnectionPool
 
-from fakes import CALL, FakeSymbols
 from order_service import Position, PositionStore, PositionUpdater, Side
 from order_service.api import create_app
 from order_service.config import DATABASE_TIMEZONE, DATABASE_URL
+
+from fakes import CALL, FakeSymbols
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", DATABASE_URL)
 IST = timezone(timedelta(hours=5, minutes=30), "IST")

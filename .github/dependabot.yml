@@ -1,0 +1,23 @@
+# Weekly update PRs for Python dependencies, base images and CI actions.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directories: ["/market-data-service", "/order-service"]
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directories: ["/market-data-service", "/order-service"]
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

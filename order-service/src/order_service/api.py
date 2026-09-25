@@ -96,7 +96,7 @@ def create_app(
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY,
                 f"Couldn't subscribe {body.symbol} in market-data-service, so no position was created: {e}",
-            )
+            ) from e
         return PositionResponse.model_validate(position)
 
     @app.get("/positions", response_model=PositionListResponse)

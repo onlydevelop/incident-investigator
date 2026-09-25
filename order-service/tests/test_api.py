@@ -4,8 +4,9 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
-from fakes import CALL, PUT, FakeSymbols
 from order_service.api import create_app
+
+from fakes import CALL, PUT, FakeSymbols
 
 
 class TestCreate:

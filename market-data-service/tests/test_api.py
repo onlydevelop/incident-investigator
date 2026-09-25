@@ -7,6 +7,7 @@ from delta_ticker.api import create_app
 from delta_ticker.cache import TickerCache
 from delta_ticker.payload import TickerPayload
 from delta_ticker.symbols import SymbolRegistry
+
 from test_payload import MESSAGE
 
 CALL = "C-BTC-80000-091026"

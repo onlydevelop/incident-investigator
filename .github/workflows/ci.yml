@@ -1,0 +1,202 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch or PR cancels the run in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13"  # matches the Dockerfiles' python:3.13-slim
+  FORCE_COLOR: "1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Ruff (config in ruff.toml)
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.16.9"
+          args: check --output-format=github
+
+      - name: Validate compose files
+        # The services' files use the external `portfolio` network; `config` checks syntax only.
+        run: |
+          docker compose -f infra/docker-compose.yml config --quiet
+          docker compose -f market-data-service/docker-compose.yml config --quiet
+          docker compose -f order-service/docker-compose.yml --profile test config --quiet
+
+      - name: Shellcheck scripts
+        run: shellcheck scripts/*.sh
+
+  test-market-data:
+    name: Test market-data-service
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: market-data-service
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: market-data-service/pyproject.toml
+
+      - name: Install
+        run: pip install ".[dev]"
+
+      # Redis is faked (fakeredis) and Kafka is mocked, so no services are needed.
+      - name: Unit tests with coverage
+        run: >
+          python -m pytest -p no:cacheprovider
+          --cov --cov-report=term-missing --cov-report=xml --cov-report=html
+          --junitxml=junit.xml
+
+      - name: Coverage summary
+        if: ${{ !cancelled() }}
+        run: |
+          echo "## market-data-service coverage" >> "$GITHUB_STEP_SUMMARY"
+          python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-market-data-service
+          path: |
+            market-data-service/coverage.xml
+            market-data-service/htmlcov/
+            market-data-service/junit.xml
+          retention-days: 14
+
+  test-order-service:
+    name: Test order-service
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: order-service
+    # The store and API tests run against real Postgres, like `make test` does locally.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: portfolio
+          POSTGRES_PASSWORD: portfolio
+          POSTGRES_DB: portfolio
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U portfolio -d portfolio"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://portfolio:portfolio@localhost:5432/portfolio
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: order-service/pyproject.toml
+
+      - name: Install
+        run: pip install ".[dev]"
+
+      - name: Unit tests with coverage
+        run: >
+          python -m pytest -p no:cacheprovider
+          --cov --cov-report=term-missing --cov-report=xml --cov-report=html
+          --junitxml=junit.xml
+
+      - name: Coverage summary
+        if: ${{ !cancelled() }}
+        run: |
+          echo "## order-service coverage" >> "$GITHUB_STEP_SUMMARY"
+          python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-order-service
+          path: |
+            order-service/coverage.xml
+            order-service/htmlcov/
+            order-service/junit.xml
+          retention-days: 14
+
+  build:
+    name: Build ${{ matrix.service }} image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [market-data-service, order-service]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Builds the runtime stage only (what docker-compose runs); nothing is pushed.
+      - name: Build runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.service }}
+          target: runtime
+          push: false
+          tags: ${{ matrix.service }}:ci
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  smoke:
+    name: End-to-end smoke test
+    runs-on: ubuntu-latest
+    needs: [lint, test-market-data, test-order-service, build]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start shared infra (redis, kafka, postgres) and create topics
+        run: make -C infra up
+
+      # The delta-ticker isn't started: CI shouldn't depend on Delta Exchange being reachable.
+      # The smoke test publishes its own ticks to Kafka instead.
+      - name: Start market-data-service symbols API
+        working-directory: market-data-service
+        run: docker compose up -d --build --wait symbols-api
+
+      - name: Start order-service
+        working-directory: order-service
+        run: docker compose up -d --build --wait orders-api position-updater
+
+      - name: Run smoke test
+        run: scripts/smoke-test.sh
+
+      - name: Container logs
+        if: ${{ failure() }}
+        run: |
+          docker compose -f order-service/docker-compose.yml logs
+          docker compose -f market-data-service/docker-compose.yml logs symbols-api
+          docker compose -f infra/docker-compose.yml logs --tail 100
+
+      - name: Tear down
+        if: ${{ always() }}
+        run: |
+          docker compose -f order-service/docker-compose.yml down
+          docker compose -f market-data-service/docker-compose.yml down
+          docker compose -f infra/docker-compose.yml down --volumes

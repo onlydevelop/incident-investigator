@@ -1,0 +1,13 @@
+# Lint config for every Python service in the repo; CI runs `ruff check` at the root.
+target-version = "py311"
+line-length = 120
+
+[lint]
+# Real problems (pyflakes, syntax/runtime errors, likely bugs) plus import order. Pure style rewrites
+# such as Optional[X] -> X | None are left out to match the existing code.
+select = ["E4", "E7", "E9", "F", "B", "I"]
+
+[lint.isort]
+known-first-party = ["delta_ticker", "order_service"]
+# Helper modules imported by tests from their own directory.
+known-local-folder = ["conftest", "fakes", "test_payload"]
