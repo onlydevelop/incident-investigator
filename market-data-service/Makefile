@@ -3,6 +3,7 @@ DEPS         := redis
 TICKER       := delta-ticker
 REDIS_CLI    := docker compose exec -T $(DEPS) redis-cli
 CACHE_PREFIX := ticker:latest:
+SYMBOLS_KEY  := ticker:symbols
 
 # Rancher Desktop exposes Docker on ~/.rd/docker.sock when it can't use /var/run/docker.sock.
 ifeq ($(DOCKER_HOST),)
@@ -17,10 +18,11 @@ endif
 .PHONY: help build up down restart status logs test \
         deps-start deps-stop deps-restart deps-status deps-logs \
         ticker-build ticker-start ticker-stop ticker-restart ticker-status ticker-logs ticker-run \
-        cache-show cache-get
+        cache-show cache-get \
+        symbols-show symbols-add symbols-remove symbols-set symbols-clear
 
 help: ## Show available targets
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
 
 ## --- Everything ---
 
@@ -93,3 +95,27 @@ cache-show: ## List cached symbols with their remaining TTL
 cache-get: ## Print the cached payload for SYMBOL=<symbol>
 	@test -n "$(SYMBOL)" || { echo "usage: make cache-get SYMBOL=C-BTC-79500-250926"; exit 1; }
 	@$(REDIS_CLI) get '$(CACHE_PREFIX)$(SYMBOL)'
+
+## --- Subscribed symbols (redis set, no expiry; the ticker re-reads it every 30s) ---
+
+symbols-show: ## List the symbols the ticker subscribes to
+	@$(REDIS_CLI) smembers $(SYMBOLS_KEY) | sort
+
+symbols-add: ## Add symbols: make symbols-add SYMBOLS="C-BTC-80000-091026 P-BTC-80000-091026"
+	@test -n "$(SYMBOLS)" || { echo 'usage: make symbols-add SYMBOLS="<symbol> [<symbol> ...]"'; exit 1; }
+	@$(REDIS_CLI) sadd $(SYMBOLS_KEY) $(SYMBOLS) >/dev/null
+	@$(MAKE) --no-print-directory symbols-show
+
+symbols-remove: ## Remove symbols: make symbols-remove SYMBOLS="C-BTC-79500-250926"
+	@test -n "$(SYMBOLS)" || { echo 'usage: make symbols-remove SYMBOLS="<symbol> [<symbol> ...]"'; exit 1; }
+	@$(REDIS_CLI) srem $(SYMBOLS_KEY) $(SYMBOLS) >/dev/null
+	@$(MAKE) --no-print-directory symbols-show
+
+symbols-set: ## Replace the whole list: make symbols-set SYMBOLS="..."
+	@test -n "$(SYMBOLS)" || { echo 'usage: make symbols-set SYMBOLS="<symbol> [<symbol> ...]"'; exit 1; }
+	@printf 'MULTI\nDEL $(SYMBOLS_KEY)\nSADD $(SYMBOLS_KEY) $(SYMBOLS)\nEXEC\n' | $(REDIS_CLI) >/dev/null
+	@$(MAKE) --no-print-directory symbols-show
+
+symbols-clear: ## Remove all symbols (the ticker unsubscribes on its next refresh)
+	@$(REDIS_CLI) del $(SYMBOLS_KEY) >/dev/null
+	@echo "symbols cleared"

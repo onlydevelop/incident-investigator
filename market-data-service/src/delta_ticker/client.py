@@ -1,5 +1,6 @@
 import websocket
 import json
+import threading
 from typing import Callable, Optional
 
 from delta_ticker.payload import TickerPayload
@@ -19,10 +20,13 @@ class DeltaTickerClient:
         on_payload: Optional[Callable[[TickerPayload], None]] = None,
         url: str = WEBSOCKET_URL,
     ):
-        self.symbols = symbols
+        self.symbols = sorted(set(symbols))
         self.on_payload = on_payload or self.print_payload
         self.url = url
         self.ws: Optional[websocket.WebSocketApp] = None
+        self._connected = False
+        # update_symbols() runs on the refresher thread, the callbacks on the socket thread.
+        self._lock = threading.Lock()
 
     @staticmethod
     def print_payload(payload: TickerPayload):
@@ -45,23 +49,45 @@ class DeltaTickerClient:
         if self.ws:
             self.ws.close()
 
-    def subscribe(self, ws, channel: str, symbols: list[str]):
+    def update_symbols(self, symbols: list[str]):
+        """Switch to a new symbol list. On a live socket only the difference is sent:
+        Delta's subscribe adds to existing subscriptions and unsubscribe removes them."""
+        with self._lock:
+            new, old = set(symbols), set(self.symbols)
+            added, removed = sorted(new - old), sorted(old - new)
+            self.symbols = sorted(new)
+            if not (added or removed):
+                return
+            print(f"Symbols changed: +{added} -{removed}")
+            if self._connected:
+                if removed:
+                    self._send("unsubscribe", removed)
+                if added:
+                    self._send("subscribe", added)
+
+    def _send(self, action: str, symbols: list[str]):
         payload = {
-            "type": "subscribe",
+            "type": action,
             "payload": {
                 "channels": [
                     {
-                        "name": channel,
+                        "name": self.CHANNEL,
                         "symbols": symbols
                     }
                 ]
             }
         }
-        ws.send(json.dumps(payload))
+        self.ws.send(json.dumps(payload))
 
     def _on_open(self, ws):
         print("Socket opened")
-        self.subscribe(ws, self.CHANNEL, self.symbols)
+        with self._lock:
+            self._connected = True
+            # An empty subscribe stops all updates, so wait for symbols instead.
+            if self.symbols:
+                self._send("subscribe", self.symbols)
+            else:
+                print("No symbols configured yet; waiting for the next refresh")
 
     def _on_message(self, ws, message):
         try:
@@ -79,4 +105,6 @@ class DeltaTickerClient:
         print(f"Socket Error: {error!r}")
 
     def _on_close(self, ws, close_status_code, close_msg):
+        with self._lock:
+            self._connected = False
         print(f"Socket closed with status: {close_status_code} and message: {close_msg}")

@@ -2,14 +2,16 @@
 
 Streams live option tickers from [Delta Exchange](https://www.delta.exchange/) over a websocket, converts each update into a Kafka-ready `TickerPayload`, and caches the latest payload per symbol in Redis with a 10-second TTL.
 
+The symbols to subscribe to are also kept in Redis. The ticker re-reads them every 30 seconds, so you can add or remove symbols without restarting anything.
+
 Everything runs in Docker and is driven by `make`.
 
 ```
 Delta Exchange (wss, v2/ticker)
-        │
-        ▼
-  delta-ticker container ──► stdout (JSON, one line per update)
-        │
+        │                        ┌──── every 30s: read ticker:symbols (set, no expiry)
+        ▼                        │
+  delta-ticker container ────────┤
+        │                        └──► stdout (JSON, one line per update)
         ▼
   redis container   key: ticker:latest:<symbol>   TTL: 10s
 ```
@@ -25,10 +27,13 @@ With Rancher Desktop, Docker usually listens on `~/.rd/docker.sock`. The Makefil
 
 ```sh
 cd market-data-service
-make up            # build the ticker, start redis, start streaming
-make cache-show    # see what's cached
-make down          # stop everything
+make up                                                        # build the ticker, start redis and the ticker
+make symbols-set SYMBOLS="C-BTC-80000-091026 P-BTC-80000-091026"  # what to subscribe to (first run only)
+make cache-show                                                # see what's cached (within ~30s)
+make down                                                      # stop everything
 ```
+
+The symbol list is stored in Redis's data volume, so you only need to set it once. It survives `make down` and restarts.
 
 ## Makefile commands
 
@@ -57,7 +62,7 @@ delta-ticker        market-data/delta-ticker   Up 7 seconds
 market-data-redis   redis:8                    Up 12 seconds (healthy)   0.0.0.0:6379->6379/tcp
 
 $ make test
-#11 0.921 6 passed in 0.17s
+#11 0.980 15 passed in 0.18s
 ```
 
 `make test` builds the `test` stage of the Dockerfile, so a failing test fails the command.
@@ -106,12 +111,43 @@ $ make cache-get SYMBOL=C-BTC-79500-250926
 {"source":"delta.exchange","symbol":"C-BTC-79500-250926","product_id":151279, ... }
 ```
 
-`make cache-show` prints `cache empty` when nothing is cached. That happens when the ticker isn't running, or no update has arrived in the last 10 seconds.
+`make cache-show` prints `cache empty` when nothing is cached. That happens when the ticker isn't running, no symbols are configured, or no update has arrived in the last 10 seconds.
 
-Redis is also published on `localhost:6379`, so any Redis client can read the cache:
+### Symbols
+
+| Command | Description |
+|---|---|
+| `make symbols-show` | List the symbols the ticker subscribes to |
+| `make symbols-add SYMBOLS="<symbol> ..."` | Add one or more symbols |
+| `make symbols-remove SYMBOLS="<symbol> ..."` | Remove one or more symbols |
+| `make symbols-set SYMBOLS="<symbol> ..."` | Replace the whole list in one step |
+| `make symbols-clear` | Remove all symbols |
+
+```sh
+$ make symbols-add SYMBOLS="C-BTC-80000-091026 P-BTC-80000-091026"
+C-BTC-79500-250926
+C-BTC-80000-091026
+P-BTC-79500-250926
+P-BTC-80000-091026
+
+$ make ticker-logs        # within 30s
+delta-ticker  | Symbols changed: +['C-BTC-80000-091026', 'P-BTC-80000-091026'] -[]
+
+$ make symbols-remove SYMBOLS="C-BTC-79500-250926 P-BTC-79500-250926"
+C-BTC-80000-091026
+P-BTC-80000-091026
+
+$ make ticker-logs        # within 30s
+delta-ticker  | Symbols changed: +[] -['C-BTC-79500-250926', 'P-BTC-79500-250926']
+```
+
+Changes take effect on the ticker's next refresh, up to 30 seconds later. Only the difference is sent to Delta: new symbols are subscribed and removed ones are unsubscribed, on the same connection. A removed symbol's cache entry expires 10 seconds after its last update.
+
+Redis is also published on `localhost:6379`, so any Redis client can read the cache or change the symbols:
 
 ```sh
 redis-cli get ticker:latest:C-BTC-79500-250926
+redis-cli sadd ticker:symbols C-BTC-84000-091026 P-BTC-84000-091026
 ```
 
 ## Checking that it works
@@ -122,9 +158,10 @@ redis-cli get ticker:latest:C-BTC-79500-250926
 make ticker-logs
 ```
 
-A healthy ticker logs `Socket opened`, then a subscriptions message listing your symbols, then one JSON line per update:
+A healthy ticker logs the symbols it loaded, `Socket opened`, then a subscriptions message listing your symbols, then one JSON line per update:
 
 ```
+delta-ticker  | Loaded symbols from ticker:symbols: ['C-BTC-79500-250926', 'P-BTC-79500-250926']
 delta-ticker  | Socket opened
 delta-ticker  | {
 delta-ticker  |   "channels": [
@@ -139,6 +176,7 @@ delta-ticker  | {"source":"delta.exchange","symbol":"P-BTC-79500-250926", ... }
 delta-ticker  | {"source":"delta.exchange","symbol":"C-BTC-79500-250926", ... }
 ```
 
+- **`No symbols configured yet; waiting for the next refresh`:** the `ticker:symbols` set is empty. Add symbols with `make symbols-add`.
 - **Subscriptions message but no JSON lines:** the symbols aren't trading, most likely because they've expired. See [Configuration](#configuration).
 - **An `"error"` in the subscriptions message:** Delta rejected the subscription, for example because of a wrong channel name or an unknown symbol.
 
@@ -183,19 +221,24 @@ export DOCKER_HOST=unix://$HOME/.rd/docker.sock
 |---|---|---|
 | `cache empty`, ticker logs are streaming | The ticker can't reach Redis. Look for `Failed to cache ...` in the logs | `make deps-status`, then `make deps-restart` |
 | `cache empty`, no ticker logs | The ticker isn't running | `make status`, then `make ticker-restart` |
-| Subscriptions message, but no updates | The symbols have expired or aren't trading | Update `OPTION_SYMBOLS`, then `make ticker-restart` |
+| `cache empty`, `No symbols configured yet` in the logs | The `ticker:symbols` set is empty | `make symbols-add SYMBOLS="..."`, then wait up to 30s |
+| A symbol you added isn't in the cache | The next refresh hasn't happened yet, or the symbol isn't trading | Wait 30s, then check `make ticker-logs` for `Symbols changed` |
+| Subscriptions message, but no updates | The symbols have expired or aren't trading | Swap them with `make symbols-remove` / `make symbols-add` |
 | `failed to connect to the docker API` | Docker isn't running, or `DOCKER_HOST` isn't set for a raw `docker` command | Start Docker Desktop or Rancher Desktop. Use the `make` targets, or export `DOCKER_HOST` as shown above |
 
 ## Configuration
 
 | What | Where | Default |
 |---|---|---|
-| Symbols to subscribe to | `OPTION_SYMBOLS` in [`src/delta_ticker/__main__.py`](src/delta_ticker/__main__.py) | `C-BTC-79500-250926`, `P-BTC-79500-250926` |
+| Symbols to subscribe to | Redis set `ticker:symbols` (no expiry). Manage with the `make symbols-*` targets | empty |
+| Symbol refresh interval | `SYMBOL_REFRESH_SECONDS` in [`src/delta_ticker/__main__.py`](src/delta_ticker/__main__.py) | `30` |
 | Cache TTL | `CACHE_TTL_SECONDS` in [`src/delta_ticker/__main__.py`](src/delta_ticker/__main__.py) | `10` |
 | Redis connection | `REDIS_URL` environment variable | `redis://redis:6379/0` in Docker, `redis://localhost:6379/0` otherwise |
 | Redis host port | `REDIS_PORT` environment variable | `6379` |
 
-Option symbols follow `<C|P>-<underlying>-<strike>-<DDMMYY>`, e.g. `C-BTC-79500-250926` is a BTC call, strike 79,500, expiring 25 Sep 2026. Expired symbols stop updating, so change the list as options expire, then run `make ticker-restart`.
+Option symbols follow `<C|P>-<underlying>-<strike>-<DDMMYY>`, e.g. `C-BTC-79500-250926` is a BTC call, strike 79,500, expiring 25 Sep 2026. Expired symbols stop updating, so swap them out as options expire, e.g. `make symbols-remove SYMBOLS=...` and `make symbols-add SYMBOLS=...`. No restart is needed.
+
+If Redis can't be read during a refresh, the ticker logs `Failed to read symbols from ticker:symbols: ...` and keeps its current subscriptions.
 
 ## Cache format
 
@@ -231,13 +274,15 @@ market-data-service/
 ├── Dockerfile               # stages: base, test, runtime
 ├── pyproject.toml           # package metadata, dependencies, `delta-ticker` command
 ├── src/delta_ticker/
-│   ├── __main__.py          # entry point: symbols, TTL, wiring
-│   ├── client.py            # DeltaTickerClient: websocket subscribe + parse
+│   ├── __main__.py          # entry point: TTL, refresh interval, wiring
+│   ├── client.py            # DeltaTickerClient: websocket subscribe/unsubscribe + parse
 │   ├── payload.py           # TickerPayload: Kafka-ready record
-│   └── cache.py             # TickerCache: latest payload per symbol in Redis
+│   ├── cache.py             # TickerCache: latest payload per symbol in Redis
+│   └── symbols.py           # SymbolRegistry + SymbolRefresher: symbol list from Redis, every 30s
 ├── tests/
 │   ├── test_payload.py
-│   └── test_cache.py
+│   ├── test_cache.py
+│   └── test_symbols.py
 └── experiment.ipynb         # original exploration notebook (standalone)
 ```
 
