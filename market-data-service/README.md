@@ -73,7 +73,7 @@ market-data-redis   redis:8                    "docker-entrypoint…" Up 11 seco
 symbols-api         market-data/delta-ticker   "delta-ticker-api"   Up 5 seconds (healthy)    0.0.0.0:8000->8000/tcp
 
 $ make test
-#11 1.012 35 passed in 0.65s
+#11 1.045 37 passed in 0.70s
 ```
 
 `make test` builds the `test` stage of the Dockerfile, so a failing test fails the command.
@@ -93,7 +93,7 @@ $ make test
 ```sh
 $ make ticker-logs
 delta-ticker  | Socket opened
-delta-ticker  | {"source":"delta.exchange","symbol":"C-BTC-79500-250926","product_id":151279,"contract_type":"call_options","underlying":"BTC","strike_price":79500.0,"timestamp_us":1790318731292250,"spot_price":84033.8,"mark_price":4534.7931089,"best_bid":4494.0,"bid_size":4051.0,"best_ask":4542.0,"ask_size":2695.0,"bid_iv":5e-06,"ask_iv":1.18664652,"mark_iv":0.79622592,"delta":0.99628648,"gamma":6.37e-06,"rho":0.47387059,"theta":-44.16395986,"vega":0.22779773,"open_interest":0.785,"volume":0.601}
+delta-ticker  | {"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"timestamp_us":1790324497953132,"spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
 ```
 
 ### Redis (dependencies)
@@ -119,7 +119,7 @@ ticker:latest:C-BTC-79500-250926  ttl=7s
 ticker:latest:P-BTC-79500-250926  ttl=7s
 
 $ make cache-get SYMBOL=C-BTC-79500-250926
-{"source":"delta.exchange","symbol":"C-BTC-79500-250926","product_id":151279, ... }
+{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0, ... }
 ```
 
 `make cache-show` prints `cache empty` when nothing is cached. That happens when the ticker isn't running, no symbols are configured, or no update has arrived in the last 10 seconds.
@@ -259,12 +259,12 @@ Each ticker has the fields listed in [Payload fields](#payload-fields). A symbol
 
 ```sh
 $ curl localhost:8000/tickers
-{"tickers":[{"source":"delta.exchange","symbol":"C-BTC-80000-091026","product_id":153512,"contract_type":"call_options","underlying":"BTC","strike_price":80000.0,"timestamp_us":1790324460123456,"spot_price":83950.1,"mark_price":4909.38632822, ...},
-            {"source":"delta.exchange","symbol":"P-BTC-80000-091026", ... ,"mark_price":745.7730827, ...}],
+{"tickers":[{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"timestamp_us":1790324497953132,"spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966},
+            {"symbol":"P-BTC-80000-091026", ... }],
  "count":2}
 
 $ curl localhost:8000/tickers/C-BTC-80000-091026
-{"source":"delta.exchange","symbol":"C-BTC-80000-091026","product_id":153512,"contract_type":"call_options", ... }
+{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"timestamp_us":1790324497953132,"spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
 
 $ curl -w ' (%{http_code})\n' localhost:8000/tickers/C-BTC-84000-091026
 {"detail":"No ticker for C-BTC-84000-091026 in the last 10s"} (404)
@@ -292,8 +292,8 @@ delta-ticker  |     }
 delta-ticker  |   ],
 delta-ticker  |   "type": "subscriptions"
 delta-ticker  | }
-delta-ticker  | {"source":"delta.exchange","symbol":"P-BTC-79500-250926", ... }
-delta-ticker  | {"source":"delta.exchange","symbol":"C-BTC-79500-250926", ... }
+delta-ticker  | {"symbol":"P-BTC-80000-091026", ... }
+delta-ticker  | {"symbol":"C-BTC-80000-091026", ... }
 ```
 
 - **`No symbols configured yet; waiting for the next refresh`:** the `ticker:symbols` set is empty. Add symbols with `make symbols-add`.
@@ -380,14 +380,15 @@ If Redis is unreachable, the ticker logs `Failed to cache <symbol>: ...` and kee
 
 | Field | Description |
 |---|---|
-| `source` | Always `delta.exchange` |
-| `symbol`, `product_id`, `contract_type`, `underlying`, `strike_price` | Instrument details |
+| `symbol`, `product_id`, `strike_price` | Instrument details |
 | `timestamp_us` | Exchange timestamp, microseconds since the epoch |
 | `spot_price`, `mark_price` | Underlying spot and the option's mark price |
-| `best_bid`, `bid_size`, `best_ask`, `ask_size` | Top of book |
-| `bid_iv`, `ask_iv`, `mark_iv` | Implied volatilities |
-| `delta`, `gamma`, `rho`, `theta`, `vega` | Greeks (`null` for non-options) |
-| `open_interest`, `volume` | Open interest and 24h volume |
+| `best_bid`, `best_ask` | Top-of-book prices |
+| `delta` | Option delta (`null` for non-options) |
+
+```json
+{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"timestamp_us":1790324497953132,"spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
+```
 
 Numbers are floats. Anything Delta doesn't send is `null`.
 

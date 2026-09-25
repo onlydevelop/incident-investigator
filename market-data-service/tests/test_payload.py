@@ -34,17 +34,23 @@ def test_from_message_parses_strings_to_floats():
     assert p.symbol == "C-BTC-79500-250926"
     assert p.strike_price == 79500.0
     assert p.best_bid == 4496.0
-    assert p.mark_iv == 0.85322924
+    assert p.best_ask == 4544.0
     assert p.delta == 0.99539805
-    assert p.open_interest == 0.785
+
+
+def test_payload_has_only_the_kept_fields():
+    assert set(TickerPayload.from_message(MESSAGE).to_dict()) == {
+        "symbol", "product_id", "strike_price", "timestamp_us",
+        "spot_price", "mark_price", "best_bid", "best_ask", "delta",
+    }
 
 
 def test_missing_greeks_and_null_quotes_become_none():
-    msg = {**MESSAGE, "greeks": None, "quotes": {"best_bid": None, "ask_iv": ""}}
+    msg = {**MESSAGE, "greeks": None, "quotes": {"best_bid": None, "best_ask": ""}}
     p = TickerPayload.from_message(msg)
     assert p.delta is None
     assert p.best_bid is None
-    assert p.ask_iv is None
+    assert p.best_ask is None
 
 
 def test_missing_required_field_raises():
@@ -56,6 +62,11 @@ def test_missing_required_field_raises():
 def test_json_round_trip():
     p = TickerPayload.from_message(MESSAGE)
     assert TickerPayload.from_json(p.to_json()) == p
+
+
+def test_from_json_ignores_fields_from_older_versions():
+    old = {**TickerPayload.from_message(MESSAGE).to_dict(), "source": "delta.exchange", "vega": 0.28}
+    assert TickerPayload.from_json(json.dumps(old)) == TickerPayload.from_message(MESSAGE)
 
 
 def test_kafka_key_and_value():
