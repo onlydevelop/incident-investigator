@@ -4,7 +4,7 @@ Streams live option tickers from [Delta Exchange](https://www.delta.exchange/) o
 
 The symbols to subscribe to are also kept in Redis, and a FastAPI service manages them over HTTP. The ticker re-reads them every 30 seconds, so you can add or remove symbols without restarting anything.
 
-Everything runs in Docker and is driven by `make`.
+Everything runs in Docker and is driven by `make`. Redis comes from the shared infra stack in [`../infra`](../infra/README.md), which also runs Kafka and Postgres for the other services. `make up` starts it if it isn't already running.
 
 ```
 Delta Exchange (wss, v2/ticker)
@@ -32,17 +32,17 @@ With Rancher Desktop, Docker usually listens on `~/.rd/docker.sock`. The Makefil
 
 ```sh
 cd market-data-service
-make up          # build the image, start redis, the ticker and the symbols API
+make up          # start the shared infra if needed, build the image, start the ticker and the symbols API
 
 # what to subscribe to (first run only)
 curl -X PUT localhost:8000/symbols -H 'content-type: application/json' \
      -d '{"symbols": ["C-BTC-80000-091026", "P-BTC-80000-091026"]}'
 
 make cache-show  # see what's cached (within ~30s)
-make down        # stop everything
+make down        # stop the ticker and the API (the shared infra keeps running)
 ```
 
-The symbol list is stored in Redis's data volume, so you only need to set it once. It survives `make down` and restarts.
+The symbol list is stored in Redis's data volume, so you only need to set it once. It survives `make down`, `make deps-stop` and restarts.
 
 ## Makefile commands
 
@@ -53,24 +53,26 @@ Run `make` with no arguments to list every target.
 | Command | Description |
 |---|---|
 | `make build` | Build all images |
-| `make up` | Build the image, start Redis (waits until healthy), then the ticker and the symbols API |
-| `make down` | Stop and remove all containers. The Redis data volume is kept |
+| `make up` | Start the shared infra (waits until healthy), build the image, then start the ticker and the symbols API |
+| `make down` | Stop and remove the ticker and API containers. The shared infra keeps running |
 | `make restart` | `down`, then `up` |
-| `make status` | Show all containers |
-| `make logs` | Follow logs from all containers |
+| `make status` | Show this service's containers |
+| `make logs` | Follow logs from this service's containers |
 | `make test` | Run the unit tests inside Docker |
 
 ```sh
 $ make up
- Container market-data-redis Healthy
+ Container infra-redis Healthy
+ Container infra-kafka Healthy
+ Container infra-postgres Healthy
+topic market-data.ticker
  Container delta-ticker Healthy
  Container symbols-api Healthy
 
 $ make status
-NAME                IMAGE                      COMMAND              STATUS                    PORTS
-delta-ticker        market-data/delta-ticker   "delta-ticker"       Up 5 seconds
-market-data-redis   redis:8                    "docker-entrypoint…" Up 11 seconds (healthy)   0.0.0.0:6379->6379/tcp
-symbols-api         market-data/delta-ticker   "delta-ticker-api"   Up 5 seconds (healthy)    0.0.0.0:8000->8000/tcp
+NAME           IMAGE                      COMMAND              STATUS                   PORTS
+delta-ticker   market-data/delta-ticker   "delta-ticker"       Up 5 seconds
+symbols-api    market-data/delta-ticker   "delta-ticker-api"   Up 5 seconds (healthy)   0.0.0.0:8000->8000/tcp
 
 $ make test
 #11 0.980 41 passed in 0.63s
@@ -83,7 +85,7 @@ $ make test
 | Command | Description |
 |---|---|
 | `make ticker-build` | Build the ticker image |
-| `make ticker-start` | Build if needed and start the ticker in the background (starts Redis too if it isn't running) |
+| `make ticker-start` | Build if needed and start the ticker in the background (starts the shared infra too if it isn't running) |
 | `make ticker-stop` | Stop the ticker container |
 | `make ticker-restart` | Rebuild and recreate the ticker. Use this after changing code |
 | `make ticker-status` | Show the ticker container |
@@ -96,15 +98,17 @@ delta-ticker  | Socket opened
 delta-ticker  | {"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"time":"2026-09-25T13:51:37.953132+05:30","spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
 ```
 
-### Redis (dependencies)
+### Shared infra (dependencies)
+
+These targets run the matching target in [`../infra`](../infra/README.md). Redis, Kafka and Postgres are shared with the other services, so stopping them affects those services too.
 
 | Command | Description |
 |---|---|
-| `make deps-start` | Start Redis and wait until it's healthy |
-| `make deps-stop` | Stop Redis. Data is kept |
-| `make deps-restart` | Restart Redis |
-| `make deps-status` | Show the Redis container |
-| `make deps-logs` | Follow Redis logs |
+| `make deps-start` | Start Redis, Kafka and Postgres, wait until they're healthy, and create the Kafka topics. Does nothing if they're already up |
+| `make deps-stop` | Stop and remove the infra containers. Data volumes are kept |
+| `make deps-restart` | Restart the infra containers |
+| `make deps-status` | Show the infra containers |
+| `make deps-logs` | Follow the infra logs |
 
 ### Cache
 
@@ -167,7 +171,7 @@ redis-cli sadd ticker:symbols C-BTC-84000-091026 P-BTC-84000-091026
 
 | Command | Description |
 |---|---|
-| `make api-start` | Build if needed and start the API (starts Redis too if it isn't running) |
+| `make api-start` | Build if needed and start the API (starts the shared infra too if it isn't running) |
 | `make api-stop` | Stop the API |
 | `make api-restart` | Rebuild and recreate the API. Use this after changing code |
 | `make api-status` | Show the API container |
@@ -326,7 +330,7 @@ Compare the payload's `time` field with the current time in IST (`TZ=Asia/Kolkat
 ### 4. Watch the Redis writes live
 
 ```sh
-docker compose exec redis redis-cli monitor
+docker compose -f ../infra/docker-compose.yml exec redis redis-cli monitor
 ```
 
 Each `SET "ticker:latest:..." ... "EX" "10"` line is the ticker writing to the cache. Press Ctrl+C to stop.
@@ -346,6 +350,7 @@ export DOCKER_HOST=unix://$HOME/.rd/docker.sock
 | `cache empty`, `No symbols configured yet` in the logs | The `ticker:symbols` set is empty | `make symbols-add SYMBOLS="..."`, then wait up to 30s |
 | A symbol you added isn't in the cache | The next refresh hasn't happened yet, or the symbol isn't trading | Wait 30s, then check `make ticker-logs` for `Symbols changed` |
 | Subscriptions message, but no updates | The symbols have expired or aren't trading | Swap them with `make symbols-remove` / `make symbols-add` |
+| `network portfolio declared as external, but could not be found` | A raw `docker compose up` ran before the shared infra was started | `make up`, or `make deps-start` first |
 | `failed to connect to the docker API` | Docker isn't running, or `DOCKER_HOST` isn't set for a raw `docker` command | Start Docker Desktop or Rancher Desktop. Use the `make` targets, or export `DOCKER_HOST` as shown above |
 
 ## Configuration
@@ -360,9 +365,9 @@ export DOCKER_HOST=unix://$HOME/.rd/docker.sock
 | Redis connection | `REDIS_URL` environment variable, read in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `redis://redis:6379/0` in Docker, `redis://localhost:6379/0` otherwise |
 | Accepted symbol format | `OPTION_SYMBOL_PATTERN` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `<C\|P>-<underlying>-<strike>-<DDMMYY>` |
 | Symbols API host port | `API_PORT` environment variable (used by docker-compose and the Makefile) | `8000` |
+| Redis host port | `REDIS_PORT` environment variable, read by [`../infra/docker-compose.yml`](../infra/docker-compose.yml) | `6379` |
 
 Changing a value in `config.py` needs a rebuild: `make restart`, or `make ticker-restart` and `make api-restart`.
-| Redis host port | `REDIS_PORT` environment variable | `6379` |
 
 Option symbols follow `<C|P>-<underlying>-<strike>-<DDMMYY>`, e.g. `C-BTC-79500-250926` is a BTC call, strike 79,500, expiring 25 Sep 2026. Expired symbols stop updating, so swap them out as options expire, e.g. `make symbols-remove SYMBOLS=...` and `make symbols-add SYMBOLS=...`. No restart is needed.
 
@@ -399,7 +404,7 @@ For Kafka, `TickerPayload.key()` returns the symbol as the message key, which ke
 ```
 market-data-service/
 ├── Makefile
-├── docker-compose.yml       # redis, delta-ticker and symbols-api services
+├── docker-compose.yml       # delta-ticker and symbols-api services, on the shared `portfolio` network
 ├── Dockerfile               # stages: base, test, runtime
 ├── pyproject.toml           # package metadata, dependencies, `delta-ticker` and `delta-ticker-api` commands
 ├── src/delta_ticker/
@@ -426,7 +431,7 @@ Optional. Requires Python 3.11+.
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest
-make deps-start                          # Redis still runs in Docker
+make deps-start                          # the shared infra (Redis etc.) still runs in Docker
 delta-ticker                             # connects to redis://localhost:6379/0
 delta-ticker-api                         # in another terminal; serves on :8000 (stop the symbols-api container first)
 ```

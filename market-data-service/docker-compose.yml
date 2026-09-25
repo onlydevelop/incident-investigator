@@ -1,19 +1,6 @@
+# Redis (and kafka, postgres) run in the shared infra stack: ../infra/docker-compose.yml.
+# Start it first (`make up` does); these containers reach it over the `portfolio` network.
 services:
-  redis:
-    image: redis:8
-    container_name: market-data-redis
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   delta-ticker:
     build:
       context: .
@@ -25,9 +12,6 @@ services:
     init: true
     environment:
       REDIS_URL: redis://redis:6379/0
-    depends_on:
-      redis:
-        condition: service_healthy
 
   symbols-api:
     # Same image as the ticker, different command.
@@ -43,14 +27,13 @@ services:
       REDIS_URL: redis://redis:6379/0
     ports:
       - "${API_PORT:-8000}:8000"
-    depends_on:
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-volumes:
-  redis-data:
+networks:
+  default:
+    name: portfolio
+    external: true

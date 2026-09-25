@@ -1,9 +1,10 @@
 # docker-compose services, split so each group can be managed on its own.
-DEPS         := redis
 TICKER       := delta-ticker
 API          := symbols-api
 API_URL      := http://localhost:$(or $(API_PORT),8000)
-REDIS_CLI    := docker compose exec -T $(DEPS) redis-cli
+# Redis, kafka and postgres are shared with other services and live in ../infra.
+INFRA        := $(MAKE) --no-print-directory -C ../infra
+REDIS_CLI    := docker compose -f ../infra/docker-compose.yml exec -T redis redis-cli
 CACHE_PREFIX := ticker:latest:
 SYMBOLS_KEY  := ticker:symbols
 
@@ -31,10 +32,10 @@ help: ## Show available targets
 
 build: ticker-build ## Build all images
 
-up: ## Build the image, start redis, the ticker and the symbols API
+up: deps-start ## Start the shared infra if needed, build the image, start the ticker and the symbols API
 	docker compose up -d --build --wait
 
-down: ## Stop and remove all containers (data volumes are kept)
+down: ## Stop and remove the ticker and API containers (the shared infra keeps running)
 	docker compose down
 
 restart: down up ## Restart everything
@@ -48,35 +49,35 @@ logs: ## Follow logs from all containers
 test: ## Run unit tests in docker
 	docker build --target test .
 
-## --- Dependencies (redis) ---
+## --- Dependencies (shared infra in ../infra: redis, kafka, postgres) ---
 
-deps-start: ## Start dependencies and wait until healthy
-	docker compose up -d --wait $(DEPS)
+deps-start: ## Start the shared infra and wait until healthy (no-op if already up)
+	@$(INFRA) up
 
-deps-stop: ## Stop dependencies (data volumes are kept)
-	docker compose stop $(DEPS)
+deps-stop: ## Stop the shared infra (also affects other services; data volumes are kept)
+	@$(INFRA) down
 
-deps-restart: ## Restart dependencies
-	docker compose restart $(DEPS)
+deps-restart: ## Restart the shared infra
+	@$(INFRA) restart
 
-deps-status: ## Show dependency containers
-	docker compose ps $(DEPS)
+deps-status: ## Show the shared infra containers
+	@$(INFRA) status
 
-deps-logs: ## Follow dependency logs
-	docker compose logs -f $(DEPS)
+deps-logs: ## Follow the shared infra logs
+	@$(INFRA) logs
 
 ## --- Delta ticker ---
 
 ticker-build: ## Build the delta_ticker image
 	docker compose build $(TICKER)
 
-ticker-start: ## Build if needed and start delta_ticker (starts redis if needed)
+ticker-start: deps-start ## Build if needed and start delta_ticker (starts the shared infra if needed)
 	docker compose up -d --build --wait $(TICKER)
 
 ticker-stop: ## Stop the delta_ticker container
 	docker compose stop $(TICKER)
 
-ticker-restart: ## Rebuild and restart delta_ticker (picks up code changes)
+ticker-restart: deps-start ## Rebuild and restart delta_ticker (picks up code changes)
 	docker compose up -d --build --force-recreate --wait $(TICKER)
 
 ticker-status: ## Show the delta_ticker container
@@ -85,19 +86,19 @@ ticker-status: ## Show the delta_ticker container
 ticker-logs: ## Follow delta_ticker output
 	docker compose logs -f $(TICKER)
 
-ticker-run: ## Run delta_ticker in the foreground in docker (Ctrl+C to stop)
+ticker-run: deps-start ## Run delta_ticker in the foreground in docker (Ctrl+C to stop)
 	docker compose run --rm --build $(TICKER)
 
 ## --- Symbols API (FastAPI, same image as the ticker) ---
 
-api-start: ## Build if needed and start the symbols API (starts redis if needed)
+api-start: deps-start ## Build if needed and start the symbols API (starts the shared infra if needed)
 	docker compose up -d --build --wait $(API)
 	@echo "Symbols API: $(API_URL)/symbols   docs: $(API_URL)/docs"
 
 api-stop: ## Stop the symbols API
 	docker compose stop $(API)
 
-api-restart: ## Rebuild and restart the symbols API (picks up code changes)
+api-restart: deps-start ## Rebuild and restart the symbols API (picks up code changes)
 	docker compose up -d --build --force-recreate --wait $(API)
 
 api-status: ## Show the symbols API container
