@@ -1,6 +1,16 @@
 import json
 from dataclasses import asdict, dataclass, fields
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+# India has no daylight saving, so a fixed offset is exact.
+IST = timezone(timedelta(hours=5, minutes=30), "IST")
+
+
+def epoch_us_to_ist(timestamp_us: int) -> str:
+    """Microseconds since the epoch -> ISO 8601 in IST, e.g. 2026-09-25T14:31:37.953132+05:30."""
+    seconds, micros = divmod(timestamp_us, 1_000_000)
+    return datetime.fromtimestamp(seconds, IST).replace(microsecond=micros).isoformat()
 
 
 @dataclass(frozen=True)
@@ -9,7 +19,7 @@ class TickerPayload:
     symbol: str
     product_id: int
     strike_price: Optional[float]
-    timestamp_us: int  # exchange timestamp, microseconds since epoch
+    time: str  # exchange timestamp in IST, ISO 8601 with +05:30 offset, microsecond precision
     spot_price: Optional[float]
     mark_price: Optional[float]
     best_bid: Optional[float]
@@ -31,7 +41,7 @@ class TickerPayload:
             symbol=data["symbol"],
             product_id=data["product_id"],
             strike_price=cls._to_float(data.get("strike_price")),
-            timestamp_us=data["timestamp"],
+            time=epoch_us_to_ist(data["timestamp"]),
             spot_price=cls._to_float(data.get("spot_price")),
             mark_price=cls._to_float(data.get("mark_price")),
             best_bid=cls._to_float(quotes.get("best_bid")),
@@ -44,6 +54,12 @@ class TickerPayload:
         """Inverse of to_json(). Unknown keys are ignored, so entries cached by an
         older version with more fields still load."""
         data = json.loads(raw)
+        # Earlier versions named this field timestamp_ist, and before that stored timestamp_us.
+        if "time" not in data:
+            if "timestamp_ist" in data:
+                data["time"] = data["timestamp_ist"]
+            elif "timestamp_us" in data:
+                data["time"] = epoch_us_to_ist(data["timestamp_us"])
         return cls(**{f.name: data.get(f.name) for f in fields(cls)})
 
     def key(self) -> bytes:

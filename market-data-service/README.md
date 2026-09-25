@@ -73,7 +73,7 @@ market-data-redis   redis:8                    "docker-entrypoint…" Up 11 seco
 symbols-api         market-data/delta-ticker   "delta-ticker-api"   Up 5 seconds (healthy)    0.0.0.0:8000->8000/tcp
 
 $ make test
-#11 1.045 37 passed in 0.70s
+#11 0.980 41 passed in 0.63s
 ```
 
 `make test` builds the `test` stage of the Dockerfile, so a failing test fails the command.
@@ -93,7 +93,7 @@ $ make test
 ```sh
 $ make ticker-logs
 delta-ticker  | Socket opened
-delta-ticker  | {"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"timestamp_us":1790324497953132,"spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
+delta-ticker  | {"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"time":"2026-09-25T13:51:37.953132+05:30","spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
 ```
 
 ### Redis (dependencies)
@@ -115,10 +115,10 @@ delta-ticker  | {"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price
 
 ```sh
 $ make cache-show
-ticker:latest:C-BTC-79500-250926  ttl=7s
-ticker:latest:P-BTC-79500-250926  ttl=7s
+ticker:latest:C-BTC-80000-091026  ttl=7s
+ticker:latest:P-BTC-80000-091026  ttl=7s
 
-$ make cache-get SYMBOL=C-BTC-79500-250926
+$ make cache-get SYMBOL=C-BTC-80000-091026
 {"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0, ... }
 ```
 
@@ -259,12 +259,12 @@ Each ticker has the fields listed in [Payload fields](#payload-fields). A symbol
 
 ```sh
 $ curl localhost:8000/tickers
-{"tickers":[{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"timestamp_us":1790324497953132,"spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966},
+{"tickers":[{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"time":"2026-09-25T13:51:37.953132+05:30","spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966},
             {"symbol":"P-BTC-80000-091026", ... }],
  "count":2}
 
 $ curl localhost:8000/tickers/C-BTC-80000-091026
-{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"timestamp_us":1790324497953132,"spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
+{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"time":"2026-09-25T13:51:37.953132+05:30","spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
 
 $ curl -w ' (%{http_code})\n' localhost:8000/tickers/C-BTC-84000-091026
 {"detail":"No ticker for C-BTC-84000-091026 in the last 10s"} (404)
@@ -321,7 +321,7 @@ make cache-get SYMBOL=C-BTC-80000-091026
 curl localhost:8000/tickers/C-BTC-80000-091026
 ```
 
-Compare the payload's `timestamp_us` field (microseconds since the epoch) with the current time. It should be only a few seconds old.
+Compare the payload's `time` field with the current time in IST (`TZ=Asia/Kolkata date`). It should be only a few seconds old.
 
 ### 4. Watch the Redis writes live
 
@@ -381,13 +381,13 @@ If Redis is unreachable, the ticker logs `Failed to cache <symbol>: ...` and kee
 | Field | Description |
 |---|---|
 | `symbol`, `product_id`, `strike_price` | Instrument details |
-| `timestamp_us` | Exchange timestamp, microseconds since the epoch |
+| `time` | Exchange timestamp in Indian Standard Time, ISO 8601 with a `+05:30` offset and microsecond precision, e.g. `2026-09-25T13:51:37.953132+05:30`. Converted from Delta's microseconds-since-epoch `timestamp` |
 | `spot_price`, `mark_price` | Underlying spot and the option's mark price |
 | `best_bid`, `best_ask` | Top-of-book prices |
 | `delta` | Option delta (`null` for non-options) |
 
 ```json
-{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"timestamp_us":1790324497953132,"spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
+{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"time":"2026-09-25T13:51:37.953132+05:30","spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
 ```
 
 Numbers are floats. Anything Delta doesn't send is `null`.
