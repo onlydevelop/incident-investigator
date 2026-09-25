@@ -6,14 +6,18 @@
     opensearch-knn         vector search only
     opensearch-hybrid      BM25 + k-NN, min-max normalized and averaged
     opensearch-hybrid-rrf  BM25 + k-NN, reciprocal rank fusion
+
+Any of them + "+rerank-<model>" reorders its top candidates with a cross-encoder (see rerank.py),
+e.g. opensearch-hybrid+rerank-bge.
 """
 
 import numpy as np
 
 from incident_rag.chunking import Chunk
 from incident_rag.index import MemoryIndex, Retriever
+from incident_rag.rerank import RERANKERS, RerankedRetriever, Reranker
 
-BACKENDS = (
+FIRST_STAGE = (
     "memory",
     "pgvector",
     "opensearch-bm25",
@@ -21,12 +25,21 @@ BACKENDS = (
     "opensearch-hybrid",
     "opensearch-hybrid-rrf",
 )
+RERANK_SUFFIX = "+rerank-"
+BACKENDS = FIRST_STAGE + tuple(f"{b}{RERANK_SUFFIX}{r}" for b in FIRST_STAGE for r in RERANKERS)
 STORES = ("pgvector", "opensearch")
+
+
+def split_backend(backend: str) -> tuple[str, str | None]:
+    """"opensearch-hybrid+rerank-bge" -> ("opensearch-hybrid", "bge"); no reranker -> (backend, None)."""
+    first_stage, _, reranker = backend.partition(RERANK_SUFFIX)
+    return first_stage, reranker or None
 
 
 def stores_for(backends: list[str]) -> list[str]:
     """The stores these backends read from."""
-    return [store for store in STORES if any(b == store or b.startswith(f"{store}-") for b in backends)]
+    first_stages = [split_backend(b)[0] for b in backends]
+    return [store for store in STORES if any(b == store or b.startswith(f"{store}-") for b in first_stages)]
 
 
 class Backends:
@@ -36,6 +49,8 @@ class Backends:
     def __init__(self):
         self._pgvector = None
         self._opensearch = None
+        # Loaded once per model: bge-reranker-base takes a few seconds to load.
+        self._rerankers: dict[str, Reranker] = {}
 
     def __enter__(self) -> "Backends":
         return self
@@ -75,6 +90,14 @@ class Backends:
     ) -> Retriever:
         """A retriever over `strategy`'s chunks. The stores must already hold them (see `ingest`); the
         memory backend has no store and is built from `chunks` and `vectors` directly."""
+        first_stage, reranker = split_backend(backend)
+        if reranker is not None:
+            if reranker not in RERANKERS:
+                raise ValueError(f"unknown reranker {reranker!r}, expected one of {list(RERANKERS)}")
+            if reranker not in self._rerankers:
+                self._rerankers[reranker] = Reranker(reranker)
+            base = self.retriever(first_stage, strategy, chunks, vectors)
+            return RerankedRetriever(base, self._rerankers[reranker])
         if backend == "memory":
             if chunks is None or vectors is None:
                 raise ValueError("the memory backend needs the chunks and their vectors")

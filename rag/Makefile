@@ -8,9 +8,11 @@ BACKEND    ?= opensearch-hybrid
 # What `make eval-backends` compares: the three strongest chunkings from `make eval`, every backend.
 EVAL_STRATEGIES := heading-merged+ctx heading+ctx fixed-256+ctx
 EVAL_BACKENDS   := memory pgvector opensearch-bm25 opensearch-knn opensearch-hybrid opensearch-hybrid-rrf
+# What `make eval-rerank` compares: each first stage as is, then reranked by each cross-encoder.
+RERANK_BACKENDS := $(foreach b,memory opensearch-bm25 opensearch-hybrid,$(b) $(b)+rerank-minilm $(b)+rerank-bge)
 
 .DEFAULT_GOAL := help
-.PHONY: help install infra test eval eval-backends misses chunks ingest search
+.PHONY: help install infra test eval eval-backends eval-rerank misses chunks ingest search
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -34,6 +36,9 @@ eval: $(PY) ## Compare every chunking strategy (in-memory search, no infra neede
 
 eval-backends: infra $(PY) ## Compare pgvector, BM25, k-NN and hybrid search on the best chunkings
 	$(PY) -m incident_rag.evaluate --strategies $(EVAL_STRATEGIES) --backends $(EVAL_BACKENDS)
+
+eval-rerank: infra $(PY) ## Recall and MRR before and after cross-encoder reranking (slow: CPU inference)
+	$(PY) -m incident_rag.evaluate --strategies $(EVAL_STRATEGIES) --backends $(RERANK_BACKENDS)
 
 misses: $(PY) ## Questions STRATEGY misses at k=3 on BACKEND, with what it retrieved instead
 	$(PY) -m incident_rag.evaluate --misses $(STRATEGY) --backends $(BACKEND)

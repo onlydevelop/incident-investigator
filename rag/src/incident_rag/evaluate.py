@@ -11,9 +11,10 @@ vectors, so each row differs from another only in its chunking or its retrieval 
 """
 
 import argparse
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 
 import yaml
 
@@ -86,6 +87,8 @@ class QuestionResult:
     answer_rank: int | None
     # Whether any chunk in the whole index answers it: fixed-size windows can cut evidence in half.
     answerable: bool
+    # Wall-clock time of the search call; query embedding is done beforehand for every backend alike.
+    seconds: float
 
     def hit(self, k: int) -> bool:
         return self.answer_rank is not None and self.answer_rank <= k
@@ -117,10 +120,12 @@ def run_questions(
 ) -> list[QuestionResult]:
     results = []
     for question, vector in zip(questions, query_vectors, strict=True):
+        started = time.perf_counter()
         ranked = [chunk for chunk, _ in retriever.search(question.question, vector, SEARCH_DEPTH)]
+        seconds = time.perf_counter() - started
         rank = next((i for i, chunk in enumerate(ranked, start=1) if answers(chunk, question)), None)
         answerable = any(answers(chunk, question) for chunk in chunks)
-        results.append(QuestionResult(question, ranked, rank, answerable))
+        results.append(QuestionResult(question, ranked, rank, answerable, seconds))
     return results
 
 
@@ -129,13 +134,18 @@ def _pct(values) -> str:
     return f"{100 * sum(values) / len(values):.0f}%" if values else "-"
 
 
+def _latency(results: list[QuestionResult]) -> str:
+    ms = sorted(1000 * r.seconds for r in results)
+    return f"{median(ms):.0f} / {ms[int(0.95 * (len(ms) - 1))]:.0f}"
+
+
 def print_summary(rows: dict[str, tuple[list[Chunk], list[QuestionResult]]]) -> None:
     print("## Retrieval quality\n")
     print(
         "| Strategy | Chunks | Tokens/chunk (mean / max) | Answerable | Recall@1 | Recall@3 | Recall@5 "
-        "| MRR@10 | Right doc@3 | Context tokens@3 | Recall@500 tok | Recall@1000 tok |"
+        "| MRR@10 | Right doc@3 | Context tokens@3 | Recall@500 tok | Recall@1000 tok | ms/query (p50 / p95) |"
     )
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for name, (chunks, results) in rows.items():
         sizes = [chunk.tokens for chunk in chunks]
         mrr = mean(r.reciprocal_rank() for r in results)
@@ -146,7 +156,7 @@ def print_summary(rows: dict[str, tuple[list[Chunk], list[QuestionResult]]]) -> 
             + f"| {mrr:.2f} | {_pct(r.doc_hit(3) for r in results)} "
             f"| {mean(r.context_tokens(3) for r in results):.0f} "
             + "".join(f"| {_pct(r.hit_within(budget) for r in results)} " for budget in BUDGETS)
-            + "|"
+            + f"| {_latency(results)} |"
         )
 
     kinds = sorted({r.question.kind for _, results in rows.values() for r in results})

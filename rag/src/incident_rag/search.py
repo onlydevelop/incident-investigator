@@ -9,7 +9,7 @@ Run `python -m incident_rag.ingest` first; the strategy must match what was inge
 
 import argparse
 
-from incident_rag.backends import BACKENDS, Backends
+from incident_rag.backends import BACKENDS, Backends, split_backend
 from incident_rag.chunking import STRATEGIES
 from incident_rag.index import Filters, embed_queries, load_embedder
 from incident_rag.ingest import DEFAULT_STRATEGY
@@ -19,7 +19,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("query")
     # memory needs the chunks in hand, which only the eval has; searching is for the stores.
-    parser.add_argument("--backend", choices=[b for b in BACKENDS if b != "memory"], default="opensearch-hybrid")
+    parser.add_argument(
+        "--backend", choices=[b for b in BACKENDS if split_backend(b)[0] != "memory"], default="opensearch-hybrid"
+    )
     parser.add_argument("--strategy", choices=STRATEGIES, default=DEFAULT_STRATEGY)
     parser.add_argument("-k", type=int, default=5)
     parser.add_argument("--type", dest="doc_type", choices=["runbook", "postmortem"])
