@@ -132,6 +132,7 @@ Run `make` with no arguments to list every target.
 | `make restart` | `down`, then `up` |
 | `make status` / `make logs` | Show / follow both containers |
 | `make test` | Run the tests in Docker against the shared Postgres (see [Tests](#tests)) |
+| `make coverage` | Run the tests with a coverage report in the terminal and in `htmlcov/`. Fails below 95% |
 | `make api-start` / `api-stop` / `api-restart` / `api-status` / `api-logs` / `api-docs` | Manage the API. `api-restart` rebuilds, so use it after changing code |
 | `make updater-start` / `updater-stop` / `updater-restart` / `updater-status` / `updater-logs` | Manage the Kafka consumer |
 | `make positions-show` | Print the `positions` table |
@@ -180,10 +181,49 @@ The schema lives in [`schema.sql`](src/order_service/schema.sql). Both container
 ## Tests
 
 ```sh
-make test
+make test        # 61 tests
+make coverage    # the same, plus a coverage report; fails below 95%
 ```
 
-The tests use the real shared Postgres, not a fake, because the pricing rules are SQL. Each run creates a throwaway schema (`test_<random>`), runs every test against it, and drops it at the end, so the service's own `positions` table is never touched. market-data-service is replaced with a fake in the API tests and with `httpx.MockTransport` in the client tests. Kafka isn't needed: the updater tests feed payloads straight to `PositionUpdater.handle`.
+```
+$ make coverage
+Name                               Stmts   Miss Branch BrPart  Cover   Missing
+------------------------------------------------------------------------------
+src/order_service/api.py              59      0      8      0   100%
+src/order_service/store.py            55      0      2      0   100%
+src/order_service/updater.py          58      0     10      0   100%
+...
+TOTAL                                266      0     22      0   100%
+Required test coverage of 95.0% reached. Total coverage: 100.00%
+HTML report: .../order-service/htmlcov/index.html
+```
+
+Coverage counts branches as well as lines, and is configured under `[tool.coverage.*]` in [`pyproject.toml`](pyproject.toml). The HTML report is written to `htmlcov/`, which git ignores.
+
+**Postgres:** the tests use the real shared Postgres, not a fake, because the pricing rules are SQL. Each run creates a throwaway schema (`test_<random>`), runs every test against it, and drops it at the end, so the service's own `positions` table is never touched. The `positions` table is emptied between tests, so ids restart at 1. Tests that need Postgres are marked `db` automatically. To run only the rest:
+
+```sh
+docker compose run --rm test python -m pytest -m "not db"
+```
+
+**Everything else is faked**, in [`tests/fakes.py`](tests/fakes.py):
+- market-data-service is `FakeSymbols` in the API tests, and `httpx.MockTransport` in the client tests.
+- Kafka is `FakeConsumer`/`FakeMessage`. They drive the real `PositionUpdater.run` loop, including idle polls, partition EOF, broker errors, bad messages and a Postgres outage.
+- `tick_bytes()` builds a ticker payload exactly as it arrives from market-data-service.
+
+**Fixtures**, in [`tests/conftest.py`](tests/conftest.py):
+
+| Fixture | Scope | Provides |
+|---|---|---|
+| `schema` | session | The throwaway schema's name; the schema is dropped at the end |
+| `pool` | session | A connection pool pinned to that schema, with the IST session time zone like production |
+| `store` | test | A `PositionStore` on an empty table |
+| `make_position` | test | Factory: `make_position(side=Side.SELL, qty="2", symbol=PUT)` inserts a pending position |
+| `later` | test | `later(seconds)`: a tick time relative to now. Negative values are before the test's positions were created |
+| `symbols` | test | A `FakeSymbols` that records subscriptions |
+| `client` | test | A FastAPI `TestClient` wired to `store` and `symbols` |
+| `create` | test | `create(side="sell", qty=2)`: `POST /positions` through `client` |
+| `updater` | test | A `PositionUpdater` on `store` |
 
 ## Project layout
 
@@ -203,11 +243,13 @@ order-service/
 │   ├── models.py            # domain types: Position (a table row), Side, Status
 │   └── config.py            # URLs, topic, consumer group, symbol format, port
 └── tests/
-    ├── conftest.py          # throwaway Postgres schema per run
-    ├── test_store.py
-    ├── test_api.py
-    ├── test_updater.py
-    └── test_market_data.py
+    ├── conftest.py          # fixtures: throwaway Postgres schema, store, factories, API client
+    ├── fakes.py             # FakeSymbols, FakeConsumer/FakeMessage, tick_bytes()
+    ├── test_store.py        # CRUD, entry and current-price rules (SQL)
+    ├── test_api.py          # endpoints, validation, error codes, OpenAPI models
+    ├── test_updater.py      # handle() and the Kafka poll loop
+    ├── test_market_data.py  # SymbolsClient against httpx.MockTransport
+    └── test_wiring.py       # from_url, lazy dependencies, main() entry points
 ```
 
 ## Not done yet

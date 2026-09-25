@@ -17,7 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # httpx2 is what FastAPI's TestClient uses; the service itself uses httpx.
-dev = ["pytest>=8", "httpx2>=2"]
+dev = ["pytest>=8", "pytest-cov>=6", "httpx2>=2"]
 
 [project.scripts]
 order-service-api = "order_service.api:main"
@@ -32,3 +32,19 @@ order_service = ["schema.sql"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "db: needs the shared Postgres (every test that uses the `store` fixture)",
+]
+
+[tool.coverage.run]
+source = ["order_service"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# `make coverage` fails below this.
+fail_under = 95
+exclude_also = [
+    'if __name__ == "__main__":',
+]

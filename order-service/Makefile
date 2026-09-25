@@ -18,7 +18,7 @@ endif
 endif
 
 .DEFAULT_GOAL := help
-.PHONY: help build up down restart status logs test \
+.PHONY: help build up down restart status logs test coverage \
         deps-start deps-status market-data-start \
         api-start api-stop api-restart api-status api-logs api-docs \
         updater-start updater-stop updater-restart updater-status updater-logs \
@@ -48,6 +48,11 @@ logs: ## Follow logs from the API and the updater
 
 test: deps-start ## Run the tests in docker, against the shared Postgres (throwaway schema)
 	docker compose run --rm --build test
+
+coverage: deps-start ## Run the tests with a coverage report (terminal, plus htmlcov/index.html); fails under 95%
+	docker compose run --rm --build -v "$(CURDIR)/htmlcov:/app/htmlcov" test \
+		python -m pytest -q -p no:cacheprovider --cov --cov-report=term-missing --cov-report=html:htmlcov
+	@echo "HTML report: $(CURDIR)/htmlcov/index.html"
 
 ## --- Dependencies ---
 
