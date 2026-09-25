@@ -14,5 +14,13 @@ services:
       timeout: 3s
       retries: 10
 
+  delta-ticker:
+    build: .
+    image: market-data/delta-ticker
+    container_name: delta-ticker
+    restart: unless-stopped
+    # Python as PID 1 ignores SIGTERM; tini forwards it so `stop` is immediate.
+    init: true
+
 volumes:
   redis-data:
