@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "observability-mcp"
+version = "0.1.0"
+description = "MCP server exposing Prometheus queries, Loki log search and Tempo trace lookup"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=2.2,<3",
+    "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=6"]
+
+[project.scripts]
+observability-mcp = "observability_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "live: needs the observability stack (make obs-up); skipped if Prometheus isn't reachable",
+]
+
+[tool.coverage.run]
+source = ["observability_mcp"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90

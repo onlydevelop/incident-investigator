@@ -144,6 +144,31 @@ jobs:
             order-service/junit.xml
           retention-days: 14
 
+  test-observability-mcp:
+    name: Test observability-mcp
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: observability-mcp
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: observability-mcp/pyproject.toml
+
+      - name: Install
+        run: pip install ".[dev]"
+
+      # Prometheus, Loki and Tempo are faked (httpx.MockTransport); the live tests need the k3s
+      # observability stack, so they're deselected here.
+      - name: Unit tests with coverage
+        run: >
+          python -m pytest -p no:cacheprovider -m "not live"
+          --cov --cov-report=term-missing --junitxml=junit.xml
+
   build:
     name: Build ${{ matrix.service }} image
     runs-on: ubuntu-latest

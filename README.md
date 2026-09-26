@@ -19,6 +19,7 @@ Paper-trading stack for Delta Exchange options.
 | [`order-service/`](order-service/README.md) | Paper positions in Postgres, priced from the Kafka ticker feed; positions API on `:8001` |
 | [`deploy/k8s/`](deploy/k8s/README.md) | The whole stack on the local k3s (Rancher Desktop), with Kustomize |
 | [`deploy/observability/`](deploy/observability/README.md) | Prometheus, Grafana, Loki, Tempo and the OTel Collector on the same k3s, with Helm (`make obs-up`) |
+| [`observability-mcp/`](observability-mcp/README.md) | MCP server for Prometheus queries, Loki log search and Tempo trace lookup. Registered for Claude Code in [`.mcp.json`](.mcp.json) |
 | [`scripts/smoke-test.sh`](scripts/smoke-test.sh) | End-to-end check of a running stack, on Compose or k3s |
 
 ## Running the stack
@@ -80,6 +81,7 @@ On k3s, with the [observability stack](deploy/observability/README.md) installed
 - **How to query:**
   - Every app log line has `time`, `level`, `service`, `event`, `message`, and `trace_id` when it was written inside a span. The fields are also Loki structured metadata, so `{service_name="orders-api"} | event="position_rejected"` works without `| json`.
   - App metrics carry `job="incident-investigator/<service>"`. Infra metrics carry `job="postgres"`, `"redis"` or `"kafka-exporter"`.
+- **Querying it from a model:** [`observability-mcp`](observability-mcp/README.md) exposes all three backends as MCP tools.
 - **Where the details are:** each metric is described in [deploy/k8s/README.md](deploy/k8s/README.md#observability). How it's collected is in [deploy/observability/README.md](deploy/observability/README.md).
 
 ## CI
@@ -91,6 +93,7 @@ On k3s, with the [observability stack](deploy/observability/README.md) installed
 | Lint | `ruff check` with [`ruff.toml`](ruff.toml): pyflakes, likely bugs and import order. Also checks that every compose file is valid, runs shellcheck on `scripts/`, and renders the k8s manifests with `kubectl kustomize` |
 | Test market-data-service | Unit tests with branch coverage. Fails below 80%; it's at 83% now |
 | Test order-service | Unit tests against a real Postgres 18 service container, with branch coverage. Fails below 95%; it's at 100% now |
+| Test observability-mcp | The MCP server's tools against fake Prometheus, Loki and Tempo, with branch coverage. Fails below 90%; it's at 98% now |
 | Build | Builds each service's runtime image with a layer cache. Nothing is pushed |
 | Smoke test | Runs after the four jobs above pass. Starts the real stack (infra, the symbols API, order-service) and runs `scripts/smoke-test.sh` |
 | Publish badges | Pushes and manual runs on `main` only. Turns the results above into the README badges (see [Badges](#badges)) |

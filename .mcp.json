@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "observability": {
+      "type": "stdio",
+      "command": "observability-mcp/.venv/bin/observability-mcp",
+      "args": [],
+      "env": {
+        "PROMETHEUS_URL": "http://prometheus.localhost",
+        "LOKI_URL": "http://loki.localhost",
+        "TEMPO_URL": "http://tempo.localhost"
+      }
+    }
+  }
+}
