@@ -9,8 +9,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 MODEL = os.environ.get("INCIDENT_AGENT_MODEL", "claude-opus-5")
 # Investigations are multi-step and evidence-heavy, which is where higher effort pays off.
 EFFORT = os.environ.get("INCIDENT_AGENT_EFFORT", "high")
-# Rounds of tool calls before the agent is told to write its report with what it has.
-MAX_TOOL_ROUNDS = int(os.environ.get("INCIDENT_AGENT_MAX_TOOL_ROUNDS", "25"))
+# Model calls per run, the last two kept for writing the report (see graph.py).
+MAX_STEPS = int(os.environ.get("INCIDENT_AGENT_MAX_STEPS", "30"))
+
+# Where approved remediation is applied, through kubectl. The context defaults to kubectl's current one.
+NAMESPACE = os.environ.get("INCIDENT_AGENT_NAMESPACE", "incident-investigator")
+KUBE_CONTEXT = os.environ.get("INCIDENT_AGENT_KUBE_CONTEXT") or None
 
 # The same server definition Claude Code uses, so there is one place to point it at the stack.
 MCP_CONFIG = Path(os.environ.get("INCIDENT_AGENT_MCP_CONFIG", REPO_ROOT / ".mcp.json"))

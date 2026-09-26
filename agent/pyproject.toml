@@ -31,4 +31,5 @@ pythonpath = ["src"]
 asyncio_mode = "auto"
 markers = [
     "mcp: starts the installed observability-mcp server over stdio; skipped if it isn't installed",
+    "k8s: runs kubectl against the cluster, in server-side dry-run mode only; skipped if it isn't reachable",
 ]
