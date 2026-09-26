@@ -104,7 +104,10 @@ def create_model(model: str, effort: str) -> ChatAnthropic:
 
 
 def create_checkpointer() -> InMemorySaver:
-    return InMemorySaver(serde=JsonPlusSerializer().with_msgpack_allowlist(STATE_TYPES))
+    # An explicit allowlist: LangGraph's built-in safe types (messages included) plus the state's own.
+    # `JsonPlusSerializer().with_msgpack_allowlist(...)` would not do: on the default, permissive
+    # serializer it returns the serializer unchanged, which restores our types with a warning.
+    return InMemorySaver(serde=JsonPlusSerializer(allowed_msgpack_modules=STATE_TYPES))
 
 
 def build_graph(

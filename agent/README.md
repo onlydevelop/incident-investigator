@@ -14,19 +14,174 @@ It returns an `InvestigationReport`, a Pydantic model defined in [`report.py`](s
 | `next_step` | The single most useful thing to do now, with its command or query |
 | `remediation` | Proposed changes to the cluster: restart or scale one of the four app deployments. Empty when confidence is low. Nothing in it runs until a human approves it (see [Remediation](#remediation)) |
 
-```sh
-make obs-up                           # from the repo root: the telemetry it queries
-make -C observability-mcp install     # the MCP server it starts
-make -C rag ingest                    # the corpus in OpenSearch (or use --rag-backend memory)
-export ANTHROPIC_API_KEY=...
+## Getting started
 
-make -C agent install
-make -C agent run Q="Positions don't seem to be getting fresh prices"
-make -C agent run Q="orders-api is returning 503s" ARGS="--verbose --dry-run"
-make -C agent test                    # scripted model and a fake cluster, no API calls
+Every command runs from the repo root, in this order. The first run takes a while: it builds two images, installs four Helm charts, and downloads the embedding model (about 130 MB).
+
+### 0. Prerequisites
+
+- **Rancher Desktop** with Kubernetes enabled and the Docker engine (moby) selected. The kube context must be `rancher-desktop` (see [deploy/k8s/README.md](../deploy/k8s/README.md#0-prerequisites)).
+- **Helm**, for the observability stack.
+- **Python 3.11 or later.**
+- **An Anthropic API key.**
+
+```sh
+kubectl config current-context        # rancher-desktop
+helm version --short
+python3 --version
 ```
 
+### 1. Start the observability stack
+
+Prometheus, Grafana, Loki, Tempo and the OTel Collector, in the `observability` namespace. Install it before the app stack, so that `k8s-start` also adds the exporters' PodMonitor.
+
+```sh
+make obs-up
+curl -s http://prometheus.localhost/-/ready     # Prometheus Server is Ready.
+```
+
+### 2. Start the app stack
+
+delta-ticker, symbols-api, orders-api and position-updater, with their Postgres, Redis and Kafka, in the `incident-investigator` namespace. Images are built on the first run.
+
+```sh
+make k8s-start
+make k8s-status
+```
+
+An idle stack has little to investigate. To get ticks flowing, open a paper position as in [step 2 of the k3s walkthrough](../deploy/k8s/README.md#2-create-positions). Creating a position also subscribes its symbol, so delta-ticker starts streaming it.
+
+### 3. Install the MCP server
+
+The agent starts it itself, from the `observability` entry in [`.mcp.json`](../.mcp.json).
+
+```sh
+make -C observability-mcp install
+make -C observability-mcp test        # its live tests run too, now that the stack is up
+```
+
+### 4. Load the incident corpus
+
+This starts Postgres (with pgvector) and OpenSearch with Docker Compose from [`infra/`](../infra/README.md). It then chunks and embeds the runbooks and postmortems, and loads them into both stores. OpenSearch uses about 1 GB of memory. To skip it, leave this step out and run the agent with `ARGS="--rag-backend memory"`.
+
+```sh
+make -C rag ingest                    # heading-merged+ctx: 45 chunks from 20 documents -> pgvector, opensearch
+make -C rag search Q="connected but no ticks received"
+```
+
+### 5. Install the agent
+
+```sh
+make -C agent install
+make -C agent test                    # scripted model and a fake cluster; no API calls, no cluster changes
+export ANTHROPIC_API_KEY=...
+```
+
+### 6. Investigate
+
+Try a dry run first. Actions you approve are then sent with `kubectl --dry-run=server`: the API server checks them, but nothing changes.
+
+```sh
+make -C agent run Q="Positions stopped getting new prices about half an hour ago" ARGS="--dry-run --markdown"
+```
+
+Then run without `--dry-run`. An approved action is then applied for real:
+
+```sh
+make -C agent run Q="orders-api is returning 503s"
+make -C agent run Q="orders-api is returning 503s" ARGS="--verbose"          # also show thinking and tool results
+make -C agent run Q="orders-api is returning 503s" ARGS="--no-remediation"   # never pause for approval
+```
+
+### 7. Stop it all
+
+```sh
+make k8s-stop                         # the app stack scales to 0; data is kept
+make -C infra search-stop             # OpenSearch; `make -C infra down` stops Postgres too
+```
+
+## Example session
+
+This session is **scripted**, and no incident happened. It was produced by running the real CLI with a scripted model, canned tool results and a fake cluster, driven through a pseudo-terminal. Every line is exactly what the CLI prints, and the tool calls, the approval prompt and the result are in their real formats. The incident itself, delta-ticker's websocket going half-open (RB-001's "connected but no ticks received" case), and all its numbers are made up.
+
+**The question:**
+
+```sh
+make -C agent run Q="Positions stopped getting new prices about half an hour ago" ARGS="--markdown"
+```
+
+**The investigation**, on stderr. The agent checks the alerts and searches the corpus, confirms RB-001's signals in Prometheus and Loki, and reads RB-001 in full. It then stops to ask before touching the cluster. The operator types `y`:
+
+```text
+Run 5f0c2a9e7b3d4e1f8a6b9c0d1e2f3a4b
+→ prometheus_alerts {"state": "firing"}
+→ search_incident_docs {"query": "positions current_price not updating stale market data"}
+  ← prometheus_alerts: 363 chars
+  ← search_incident_docs: 425 chars
+→ prometheus_query {"query": "md_ws_connected"}
+→ prometheus_query_range {"query": "sum(rate(md_ticks_received_total[1m]))", "start": "1h"}
+→ prometheus_query {"query": "max by (symbol) (md_tick_age_seconds)"}
+→ prometheus_query {"query": "increase(kube_pod_container_status_restarts_total{container=\"delta-ticker\"}[30m])"}
+  ← prometheus_query: 161 chars
+  ← prometheus_query_range: 335 chars
+  ← prometheus_query: 270 chars
+  ← prometheus_query: 116 chars
+→ loki_query {"query": "{service_name=\"delta-ticker\"} | json | event=~\"ws_closed|ws_error|symbols_read_failed|no_symbols|ws_message\"", "start": "6h"}
+→ get_incident_doc {"doc_id": "RB-001"}
+  ← loki_query: 593 chars
+  ← get_incident_doc: 3,258 chars
+
+Root cause (high confidence): delta-ticker's websocket to Delta went half-open at about 09:13 UTC: md_ws_connected has stayed 1 and the pod has not restarted, but md_ticks_received_total has been flat since 09:13, so for 28 minutes no ticks have reached Redis or Kafka. Every open position's current_price is frozen and new positions stay pending. This is RB-001's 'connected but no ticks received' case: the client sends no pings, so the dead connection is never noticed (PM-003). Ruled out: an exited process (no restarts, metrics present), expired symbols (both expire 9 Oct 2026 and both went stale at once), and Kafka or consumer problems (nothing is being produced to fall behind on).
+
+Proposed remediation:
+  1. restart deployment/delta-ticker  [key d1dc94ded647a3fc]
+     RB-001 > Mitigation: a half-open socket is cleared by restarting the ticker.
+Apply 1 (restart deployment/delta-ticker)? [y/N] y
+  ✓ restart deployment/delta-ticker: applied
+
+4 model calls: 79,420 input tokens (53,440 read from cache, 25,820 written to cache), 2,760 output tokens
+```
+
+**The response**, on stdout. Without `--markdown`, this is the same result as JSON:
+
+```markdown
+## Root cause (high confidence)
+
+delta-ticker's websocket to Delta went half-open at about 09:13 UTC: md_ws_connected has stayed 1 and the pod has not restarted, but md_ticks_received_total has been flat since 09:13, so for 28 minutes no ticks have reached Redis or Kafka. Every open position's current_price is frozen and new positions stay pending. This is RB-001's 'connected but no ticks received' case: the client sends no pings, so the dead connection is never noticed (PM-003). Ruled out: an exited process (no restarts, metrics present), expired symbols (both expire 9 Oct 2026 and both went stale at once), and Kafka or consumer problems (nothing is being produced to fall behind on).
+
+## Evidence
+
+- **prometheus**: md_ws_connected has been 1 for the whole window, including after ticks stopped.  
+  `md_ws_connected`
+- **prometheus**: The tick rate fell from 0.41/s to 0 at 09:13-09:14 UTC and has stayed at 0.  
+  `sum(rate(md_ticks_received_total[1m]))`
+- **prometheus**: Tick age is 1712 s and 1714 s for the two subscribed symbols, and still climbing.  
+  `max by (symbol) (md_tick_age_seconds)`
+- **loki**: delta-ticker has not restarted in 30 min, and its last connection event is ws_open at 06:31 UTC, with no ws_closed or ws_error since.  
+  `{service_name="delta-ticker"} | json | event=~"ws_closed|ws_error|symbols_read_failed|no_symbols|ws_message"`
+- **runbook**: RB-001 names 'connected but no ticks received' as a half-open socket and prescribes a restart; PM-003 is the same signature.  
+  `RB-001 > Triage, Mitigation`
+
+## Next step
+
+Restart delta-ticker (RB-001 > Mitigation), then verify per RB-001 > Verify: md_ws_connected is 1, sum(rate(md_ticks_received_total[1m])) is above 0, and max(md_tick_age_seconds) is below 10 s.
+
+## Proposed remediation
+
+1. restart deployment/delta-ticker: RB-001 > Mitigation: a half-open socket is cleared by restarting the ticker.
+
+## Remediation
+
+- ✓ restart deployment/delta-ticker: applied
+```
+
+A real investigation usually runs longer: the live run below took 9 model calls. The longer it runs, the larger the share of its input read from cache.
+
+## Output
+
 Progress and the approval prompts go to stderr. The result goes to stdout as JSON: `run_id`, `report`, and `remediation`, the outcome of each proposed action. `--markdown` renders the same result for reading. The exit code is 1 if there is no valid report, or if an approved action failed.
+
+From a real run against the live stack. The feed was healthy, so the agent proposed no remediation:
 
 ```text
 Run 00683fe3305f4d94875840c426802c4d

@@ -193,6 +193,24 @@ def test_rejects_a_step_limit_too_small_for_the_report():
 # --- Approval and remediation ---
 
 
+async def test_the_state_survives_the_checkpoint_without_serializer_warnings(caplog):
+    """Resuming restores the state from the checkpoint; every type in it must be on the allowlist."""
+    cluster = FakeCluster()
+    model = ScriptedModel(responses=[call("prometheus_query", "c1", query="up"),
+                                     reply({**REPORT, "remediation": [RESTART]})])
+    graph = graph_for(model, cluster=cluster)
+    paused = await graph.ainvoke(task(), run_config())
+    key = paused["__interrupt__"][0].value["proposals"][0]["key"]
+
+    with caplog.at_level("WARNING"):
+        state = await graph.ainvoke(Command(resume={"approver": "d", "approved": [key]}), run_config())
+
+    assert not [r for r in caplog.records if "unregistered" in r.message or "block" in r.message.lower()]
+    assert isinstance(state["report"], InvestigationReport)
+    assert state["messages"][1].tool_calls[0]["name"] == "prometheus_query"
+    assert [r.status for r in state["remediation"]] == ["applied"]
+
+
 async def test_pauses_for_approval_and_applies_only_what_was_approved():
     cluster = FakeCluster()
     model = ScriptedModel(responses=[reply({**REPORT, "remediation": [RESTART, SCALE]})])

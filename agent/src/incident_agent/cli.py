@@ -125,7 +125,12 @@ async def _ask_approval(report: InvestigationReport, proposals: list[dict], dry_
     approved = []
     for i, p in enumerate(proposals, 1):
         # input() blocks; in a thread, the MCP session's reader keeps running meanwhile.
-        answer = await asyncio.to_thread(input, f"Apply {i} ({p.action.describe()})? [y/N] ")
+        try:
+            answer = await asyncio.to_thread(input, f"Apply {i} ({p.action.describe()})? [y/N] ")
+        except EOFError:
+            # Ctrl-D, or input ran out: a "no" to this action and every one after it.
+            _log("\nEnd of input: rejecting the remaining actions.")
+            break
         if answer.strip().lower() in ("y", "yes"):
             approved.append(p.key)
     return ApprovalDecision(approver=approver, approved=approved)
