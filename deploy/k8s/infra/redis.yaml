@@ -47,6 +47,24 @@ spec:
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {memory: 256Mi}
+        # Memory, evictions, keyspace hits and misses, commands per second. Scraped by the
+        # PodMonitor in ../monitoring.
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.92.0
+          ports:
+            - name: metrics
+              containerPort: 9121
+          env:
+            - {name: REDIS_ADDR, value: "redis://localhost:6379"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 59000
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
   volumeClaimTemplates:
     - metadata:
         name: data

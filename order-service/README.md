@@ -148,9 +148,9 @@ The API and the updater share one image. After changing shared code, run `make r
 
 ```sh
 $ make updater-logs
-position-updater  | Consuming market-data.ticker as order-service.position-updater
-position-updater  | Opened 1 position(s) in P-BTC-80000-091026 at bid=596.0 ask=608.0
-position-updater  | Opened 1 position(s) in C-BTC-84000-091026 at bid=2583.0 ask=2601.0
+position-updater  | {..., "event": "startup", "message": "Consuming market-data.ticker as order-service.position-updater", ...}
+position-updater  | {..., "event": "positions_opened", "message": "Opened 1 position(s) in P-BTC-80000-091026 at bid=596.0 ask=608.0", "symbol": "P-BTC-80000-091026", "opened": 1, ...}
+position-updater  | {..., "event": "positions_opened", "message": "Opened 1 position(s) in C-BTC-84000-091026 at bid=2583.0 ask=2601.0", ...}
 
 $ make positions-show
  id |               time               |       symbol       | side | qty | status | entry_price | current_price |        current_price_time
@@ -179,6 +179,8 @@ $ make positions-show
 | Topic and consumer group | `TICKER_TOPIC`, `CONSUMER_GROUP` in [`config.py`](src/order_service/config.py) | `market-data.ticker`, `order-service.position-updater` |
 | Accepted symbol format | `OPTION_SYMBOL_PATTERN` in [`config.py`](src/order_service/config.py). Keep it in sync with market-data-service | `<C\|P>-<underlying>-<strike>-<DDMMYY>` |
 | API host port | `ORDERS_API_PORT` environment variable (docker-compose and the Makefile) | `8001` |
+| Log level | `LOG_LEVEL` environment variable | `INFO` |
+| Trace and metric export | `OTEL_EXPORTER_OTLP_ENDPOINT` and the other standard `OTEL_*` variables. Unset means nothing is exported | unset (set on k3s) |
 
 The schema lives in [`schema.sql`](src/order_service/schema.sql). Both containers apply it on startup with `CREATE ... IF NOT EXISTS`, so it creates the table the first time and doesn't touch it afterwards. There are no migrations yet, so a change to an existing column has to be applied by hand (`make db-shell`).
 
@@ -229,6 +231,26 @@ docker compose run --rm test python -m pytest -m "not db"
 | `create` | test | `create(side="sell", qty=2)`: `POST /positions` through `client` |
 | `updater` | test | A `PositionUpdater` on `store` |
 
+## Logs, metrics and traces
+
+[`telemetry.py`](src/order_service/telemetry.py) sets this up for both entry points:
+- **Logs:** always one JSON object per line on stdout. Each line has `time`, `level`, `service`, `event` and `message`, the event's own fields (`position_id`, `symbol`, `reason`, ...), and `trace_id` / `span_id` when it was written inside a span. uvicorn's access log is included, minus the `/health` and `/docs` probes.
+- **Traces and metrics:** exported over OTLP only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. The k3s deployment sets it to the collector of the [observability stack](../deploy/observability/README.md). docker-compose and the tests don't set it, so nothing is exported there.
+
+**Traces:**
+- **`POST /positions`** covers its Postgres INSERT and the call to market-data-service, which continues the trace on that side.
+- **The updater** processes each tick in a `market-data.ticker process` span. It continues the delta-ticker's trace from the message's `traceparent` header, and its Postgres UPDATEs are children.
+
+**Metrics:**
+
+| Process | Metrics |
+|---|---|
+| orders-api | `http_server_request_duration_seconds`, `positions_created_total{side}` |
+| position-updater | `position_updater_ticks_total{result}`, `positions_opened_total`, `position_updater_tick_age_seconds` |
+| Both | `db_pool_size`, `db_pool_in_use`, `db_pool_max`, `db_pool_requests_waiting` |
+
+[`deploy/k8s/README.md`](../deploy/k8s/README.md#observability) describes each one.
+
 ## Project layout
 
 ```
@@ -245,14 +267,16 @@ order-service/
 │   ├── schema.sql           # positions table
 │   ├── market_data.py       # SymbolsClient: subscribe a symbol in market-data-service
 │   ├── models.py            # domain types: Position (a table row), Side, Status
-│   └── config.py            # URLs, topic, consumer group, symbol format, port
+│   ├── config.py            # URLs, topic, consumer group, symbol format, port
+│   └── telemetry.py         # JSON logs; OTLP traces and metrics when configured
 └── tests/
-    ├── conftest.py          # fixtures: throwaway Postgres schema, store, factories, API client
+    ├── conftest.py          # fixtures: throwaway Postgres schema, store, factories, API client, in-memory OpenTelemetry SDK
     ├── fakes.py             # FakeSymbols, FakeConsumer/FakeMessage, tick_bytes()
     ├── test_store.py        # CRUD, entry and current-price rules (SQL)
     ├── test_api.py          # endpoints, validation, error codes, OpenAPI models
     ├── test_updater.py      # handle() and the Kafka poll loop
     ├── test_market_data.py  # SymbolsClient against httpx.MockTransport
+    ├── test_telemetry.py    # JSON log format, setup(), pool gauges, instrumentation
     └── test_wiring.py       # from_url, lazy dependencies, main() entry points
 ```
 

@@ -47,8 +47,10 @@ class FakeKafkaError:
 
 class FakeMessage:
     def __init__(self, value: Optional[bytes] = None, key: Optional[bytes] = None,
-                 error: Optional[FakeKafkaError] = None, offset: int = 0):
+                 error: Optional[FakeKafkaError] = None, offset: int = 0,
+                 headers: Optional[list[tuple[str, bytes]]] = None):
         self._value, self._key, self._error, self._offset = value, key, error, offset
+        self._headers = headers
 
     def value(self): return self._value
     def key(self): return self._key
@@ -56,6 +58,7 @@ class FakeMessage:
     def topic(self): return "market-data.ticker"
     def partition(self): return 0
     def offset(self): return self._offset
+    def headers(self): return self._headers
 
     @classmethod
     def eof(cls) -> "FakeMessage":

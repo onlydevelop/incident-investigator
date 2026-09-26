@@ -49,6 +49,29 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {memory: 512Mi}
+        # Connections by state (pg_stat_activity_count), database sizes, locks, settings such as
+        # max_connections. Scraped by the PodMonitor in ../monitoring.
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+          ports:
+            - name: metrics
+              containerPort: 9187
+          env:
+            - name: DATA_SOURCE_URI
+              value: localhost:5432/portfolio?sslmode=disable
+            - name: DATA_SOURCE_USER
+              valueFrom: {secretKeyRef: {name: postgres-credentials, key: POSTGRES_USER}}
+            - name: DATA_SOURCE_PASS
+              valueFrom: {secretKeyRef: {name: postgres-credentials, key: POSTGRES_PASSWORD}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534  # the image's `nobody`; numeric so runAsNonRoot can verify it
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 64Mi}
   volumeClaimTemplates:
     - metadata:
         name: data

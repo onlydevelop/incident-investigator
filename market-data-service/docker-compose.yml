@@ -13,6 +13,8 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Logs every tick, so `make ticker-logs` shows data flowing. On k3s it's INFO, and metrics count ticks.
+      LOG_LEVEL: DEBUG
 
   symbols-api:
     # Same image as the ticker, different command.

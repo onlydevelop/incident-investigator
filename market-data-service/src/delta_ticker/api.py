@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException, Path, Request, Response, st
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
+from delta_ticker import telemetry
 from delta_ticker.cache import TickerCache
 from delta_ticker.config import (
     API_HOST,
@@ -159,7 +160,13 @@ app = create_app()
 
 
 def main():
-    uvicorn.run("delta_ticker.api:app", host=API_HOST, port=API_PORT)
+    telemetry.setup("symbols-api")
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.redis import RedisInstrumentor
+    RedisInstrumentor().instrument()
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="/health,/docs")
+    # log_config=None: uvicorn's loggers go through telemetry's JSON handler.
+    uvicorn.run(app, host=API_HOST, port=API_PORT, log_config=None)
 
 
 if __name__ == "__main__":

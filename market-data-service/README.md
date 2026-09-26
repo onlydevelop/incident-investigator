@@ -103,9 +103,11 @@ $ make test
 
 ```sh
 $ make ticker-logs
-delta-ticker  | Socket opened
-delta-ticker  | {"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"time":"2026-09-25T13:51:37.953132+05:30","spot_price":84330.4,"mark_price":5148.09436923,"best_bid":5121.0,"best_ask":5177.0,"delta":0.77664966}
+delta-ticker  | {"time": "...", "level": "info", "service": "delta-ticker", "event": "ws_open", "message": "Socket opened"}
+delta-ticker  | {"time": "...", "level": "debug", "service": "delta-ticker", "event": "tick", "message": "tick", "symbol": "C-BTC-80000-091026", "product_id": 153512, ..., "best_bid": 5121.0, "best_ask": 5177.0, "delta": 0.77664966}
 ```
+
+Logs are one JSON object per line (see [Logs, metrics and traces](#logs-metrics-and-traces)). docker-compose sets `LOG_LEVEL=DEBUG` for the ticker so every tick is logged.
 
 ### Shared infra (dependencies)
 
@@ -172,14 +174,14 @@ P-BTC-79500-250926
 P-BTC-80000-091026
 
 $ make ticker-logs        # within 30s
-delta-ticker  | Symbols changed: +['C-BTC-80000-091026', 'P-BTC-80000-091026'] -[]
+delta-ticker  | {..., "event": "symbols_changed", "message": "Symbols changed: +['C-BTC-80000-091026', 'P-BTC-80000-091026'] -[]", ...}
 
 $ make symbols-remove SYMBOLS="C-BTC-79500-250926 P-BTC-79500-250926"
 C-BTC-80000-091026
 P-BTC-80000-091026
 
 $ make ticker-logs        # within 30s
-delta-ticker  | Symbols changed: +[] -['C-BTC-79500-250926', 'P-BTC-79500-250926']
+delta-ticker  | {..., "event": "symbols_changed", "message": "Symbols changed: +[] -['C-BTC-79500-250926', 'P-BTC-79500-250926']", ...}
 ```
 
 Changes take effect on the ticker's next refresh, up to 30 seconds later. Only the difference is sent to Delta: new symbols are subscribed and removed ones are unsubscribed, on the same connection. A removed symbol's cache entry expires 10 seconds after its last update.
@@ -306,27 +308,19 @@ $ curl -w ' (%{http_code})\n' localhost:8000/tickers/C-BTC-84000-091026
 make ticker-logs
 ```
 
-A healthy ticker logs the symbols it loaded, `Socket opened`, then a subscriptions message listing your symbols, then one JSON line per update:
+A healthy ticker logs the symbols it loaded, `Socket opened`, then a subscriptions message listing your symbols, then one `tick` line per update:
 
 ```
-delta-ticker  | Loaded symbols from ticker:symbols: ['C-BTC-79500-250926', 'P-BTC-79500-250926']
-delta-ticker  | Publishing to Kafka topic market-data.ticker
-delta-ticker  | Socket opened
-delta-ticker  | {
-delta-ticker  |   "channels": [
-delta-ticker  |     {
-delta-ticker  |       "name": "v2/ticker",
-delta-ticker  |       "symbols": ["C-BTC-79500-250926", "P-BTC-79500-250926"]
-delta-ticker  |     }
-delta-ticker  |   ],
-delta-ticker  |   "type": "subscriptions"
-delta-ticker  | }
-delta-ticker  | {"symbol":"P-BTC-80000-091026", ... }
-delta-ticker  | {"symbol":"C-BTC-80000-091026", ... }
+delta-ticker  | {..., "event": "symbols_loaded", "message": "Loaded symbols from ticker:symbols: ['C-BTC-79500-250926', 'P-BTC-79500-250926']", ...}
+delta-ticker  | {..., "event": "startup", "message": "Publishing to Kafka topic market-data.ticker", ...}
+delta-ticker  | {..., "event": "ws_open", "message": "Socket opened"}
+delta-ticker  | {..., "event": "ws_message", "message": "Websocket message", "data": {"channels": [{"name": "v2/ticker", "symbols": ["C-BTC-79500-250926", "P-BTC-79500-250926"]}], "type": "subscriptions"}, ...}
+delta-ticker  | {..., "level": "debug", "event": "tick", "message": "tick", "symbol": "P-BTC-80000-091026", ...}
+delta-ticker  | {..., "level": "debug", "event": "tick", "message": "tick", "symbol": "C-BTC-80000-091026", ...}
 ```
 
 - **`No symbols configured yet; waiting for the next refresh`:** the `ticker:symbols` set is empty. Add symbols with `make symbols-add`.
-- **Subscriptions message but no JSON lines:** the symbols aren't trading, most likely because they've expired. See [Configuration](#configuration).
+- **Subscriptions message but no `tick` lines:** the symbols aren't trading, most likely because they've expired. See [Configuration](#configuration).
 - **An `"error"` in the subscriptions message:** Delta rejected the subscription, for example because of a wrong channel name or an unknown symbol.
 
 ### 2. Is it reaching Kafka?
@@ -399,6 +393,8 @@ export DOCKER_HOST=unix://$HOME/.rd/docker.sock
 | Redis connection | `REDIS_URL` environment variable, read in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `redis://redis:6379/0` in Docker, `redis://localhost:6379/0` otherwise |
 | Kafka connection | `KAFKA_BOOTSTRAP_SERVERS` environment variable, read in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `kafka:9092` in Docker, `localhost:9094` otherwise |
 | Kafka topic | `TICKER_TOPIC` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py). Keep the Makefile's `TICKER_TOPIC` and `TOPICS` in [`../infra/Makefile`](../infra/Makefile) in sync | `market-data.ticker` |
+| Log level | `LOG_LEVEL` environment variable. `DEBUG` logs every tick; docker-compose sets it | `INFO` |
+| Trace and metric export | `OTEL_EXPORTER_OTLP_ENDPOINT` and the other standard `OTEL_*` variables. Unset means nothing is exported | unset (set on k3s) |
 | Undelivered update timeout | `KAFKA_MESSAGE_TIMEOUT_MS` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py). An update that can't reach Kafka within this time is dropped and logged | `30000` |
 | Accepted symbol format | `OPTION_SYMBOL_PATTERN` in [`src/delta_ticker/config.py`](src/delta_ticker/config.py) | `<C\|P>-<underlying>-<strike>-<DDMMYY>` |
 | Symbols API host port | `API_PORT` environment variable (used by docker-compose and the Makefile) | `8000` |
@@ -409,6 +405,16 @@ Changing a value in `config.py` needs a rebuild: `make restart`, or `make ticker
 Option symbols follow `<C|P>-<underlying>-<strike>-<DDMMYY>`, e.g. `C-BTC-79500-250926` is a BTC call, strike 79,500, expiring 25 Sep 2026. Expired symbols stop updating, so swap them out as options expire, e.g. `make symbols-remove SYMBOLS=...` and `make symbols-add SYMBOLS=...`. No restart is needed.
 
 If Redis can't be read during a refresh, the ticker logs `Failed to read symbols from ticker:symbols: ...` and keeps its current subscriptions.
+
+## Logs, metrics and traces
+
+[`telemetry.py`](src/delta_ticker/telemetry.py) sets this up for both entry points:
+- **Logs:** always one JSON object per line on stdout. Each line has `time`, `level`, `service`, `event` and `message`, the event's own fields (`symbol`, `reason`, ...), and `trace_id` / `span_id` when it was written inside a span. librdkafka's messages go through the same logger (`event: "librdkafka"`).
+- **Traces and metrics:** exported over OTLP only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. The k3s deployment sets it to the collector of the [observability stack](../deploy/observability/README.md). docker-compose and the tests don't set it, so nothing is exported there.
+
+The ticker starts one trace per websocket update. The Redis write and the Kafka publish are its children. Every Kafka message carries a `traceparent` header, so order-service's position-updater continues the same trace.
+
+The ticker's metrics are `md_ws_connected`, `md_ticks_received_total`, `md_ticks_published_total`, `md_kafka_produce_errors_total{reason}`, `md_cache_write_errors_total` and `md_tick_age_seconds{symbol}`. The symbols API has `http_server_request_duration_seconds`. [`deploy/k8s/README.md`](../deploy/k8s/README.md#observability) describes each one.
 
 ## Cache format
 
@@ -458,13 +464,16 @@ market-data-service/
 │   ├── payload.py           # TickerPayload: Kafka-ready record
 │   ├── publisher.py         # TickerPublisher: every payload to Kafka, keyed by symbol
 │   ├── cache.py             # TickerCache: latest payload per symbol in Redis
-│   └── symbols.py           # SymbolRegistry (symbol set CRUD) + SymbolRefresher (re-read every 30s)
+│   ├── symbols.py           # SymbolRegistry (symbol set CRUD) + SymbolRefresher (re-read every 30s)
+│   └── telemetry.py         # JSON logs; OTLP traces and metrics when configured
 ├── tests/
+│   ├── conftest.py          # in-memory OpenTelemetry SDK for the whole session
 │   ├── test_payload.py
 │   ├── test_publisher.py
 │   ├── test_cache.py
 │   ├── test_symbols.py
-│   └── test_api.py
+│   ├── test_api.py
+│   └── test_telemetry.py
 └── experiment.ipynb         # original exploration notebook (standalone)
 ```
 

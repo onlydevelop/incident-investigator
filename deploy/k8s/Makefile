@@ -8,6 +8,8 @@ TAG         := local
 MD_IMAGE    := market-data/delta-ticker:$(TAG)
 OS_IMAGE    := order-service/order-service:$(TAG)
 APPS        := deployment/delta-ticker deployment/symbols-api deployment/orders-api deployment/position-updater
+# Set when ../observability is installed: the PodMonitor kind exists, so monitoring/ can be applied.
+HAS_MONITORING = $(KUBECTL) get crd podmonitors.monitoring.coreos.com >/dev/null 2>&1
 ORDERS_URL  := http://orders.localhost
 MD_URL      := http://market-data.localhost
 # Per step of `make wait`; a pod stuck in a config or image error fails well before this.
@@ -56,14 +58,16 @@ deploy: images apply restart wait ## Build images, apply the manifests, roll the
 	@echo "orders API:      $(ORDERS_URL)/docs"
 	@echo "market-data API: $(MD_URL)/docs"
 
-apply: ## kubectl apply -k (no image build)
+apply: ## kubectl apply -k (no image build); adds the exporters' PodMonitor if ../observability is installed
 	$(KUBECTL) apply -k .
+	@if $(HAS_MONITORING); then $(KUBECTL) apply -k monitoring; \
+	else echo "no PodMonitor CRD (make -C ../observability up); infra exporters won't be scraped"; fi
 
 restart: ## Restart the apps so they pick up freshly built :$(TAG) images
 	$(K) rollout restart $(APPS)
 
 wait: ## Wait until infra and apps are ready; on failure print what's wrong instead of hanging
-	@$(K) rollout status statefulset/redis statefulset/postgres statefulset/kafka --timeout=$(TIMEOUT) \
+	@$(K) rollout status statefulset/redis statefulset/postgres statefulset/kafka deployment/kafka-exporter --timeout=$(TIMEOUT) \
 		|| { $(MAKE) --no-print-directory diagnose; exit 1; }
 	@# The Job deletes itself 5 minutes after completing, so "not found" means it already succeeded.
 	@if $(K) get job kafka-topics >/dev/null 2>&1; then \
@@ -83,7 +87,7 @@ status: ## Pods, services, ingress and volumes
 	$(K) get pods,svc,ingress,pvc -o wide
 
 logs: ## Follow an app's logs: make logs APP=orders-api
-	@test -n "$(APP)" || { echo "usage: make logs APP=delta-ticker|symbols-api|orders-api|position-updater|kafka|postgres|redis"; exit 1; }
+	@test -n "$(APP)" || { echo "usage: make logs APP=delta-ticker|symbols-api|orders-api|position-updater|kafka|kafka-exporter|postgres|redis"; exit 1; }
 	$(K) logs -f --tail=50 $$($(K) get pods -l app=$(APP) -o name | head -1)
 
 smoke: ## Run scripts/smoke-test.sh against the cluster (pauses delta-ticker meanwhile)
@@ -98,6 +102,7 @@ render: ## Print the rendered manifests
 delete: ## Remove everything except the namespace and its data volumes (PVCs)
 	@# Not `delete -k .`: that includes the Namespace, and deleting it would delete the PVCs too.
 	$(K) delete all,ingress,configmap,secret -l app.kubernetes.io/part-of=portfolio --ignore-not-found
+	@if $(HAS_MONITORING); then $(K) delete podmonitor -l app.kubernetes.io/part-of=portfolio --ignore-not-found; fi
 	@echo "PVCs kept (make deploy reuses them); 'make delete-all' removes the namespace and its data"
 
 delete-all: ## Remove the namespace, including the Postgres, Kafka and Redis data

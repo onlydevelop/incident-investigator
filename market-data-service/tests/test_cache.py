@@ -25,7 +25,8 @@ def test_store_sets_latest_payload_with_ttl():
     assert fake.calls == [("ticker:latest:C-BTC-79500-250926", payload.to_json(), 10)]
 
 
-def test_store_swallows_redis_errors(capsys):
+def test_store_swallows_redis_errors(caplog):
     TickerCache(FakeRedis(fail=True)).store(TickerPayload.from_message(MESSAGE))
 
-    assert "Failed to cache C-BTC-79500-250926" in capsys.readouterr().out
+    assert "Failed to cache C-BTC-79500-250926" in caplog.text
+    assert caplog.records[0].symbol == "C-BTC-79500-250926"

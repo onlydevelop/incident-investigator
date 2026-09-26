@@ -1,0 +1,137 @@
+# Prometheus, Grafana, kube-state-metrics and node-exporter. The release predates this file: the
+# first block of settings is what it was installed with, the rest wires in Loki, Tempo and the
+# OTel Collector. Other projects on this cluster scrape into the same Prometheus (their own
+# ServiceMonitors/PodMonitors are picked up from every namespace), so keep changes additive.
+alertmanager:
+  enabled: false
+
+# k3s runs these inside one process and doesn't expose them for scraping.
+kubeApiServer: {enabled: false}
+kubeControllerManager: {enabled: false}
+kubeEtcd: {enabled: false}
+kubeProxy: {enabled: false}
+kubeScheduler: {enabled: false}
+kubeStateMetrics: {enabled: true}
+nodeExporter: {enabled: true}
+
+kube-state-metrics:
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 100m, memory: 128Mi}
+
+prometheus-node-exporter:
+  resources:
+    requests: {cpu: 50m, memory: 32Mi}
+    limits: {cpu: 100m, memory: 64Mi}
+
+prometheusOperator:
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 200m, memory: 256Mi}
+
+prometheus:
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts: [prometheus.localhost]
+    paths: [/]
+  prometheusSpec:
+    replicas: 1
+    retention: 2d
+    # Pick up every ServiceMonitor/PodMonitor in every namespace, not only this release's.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorNamespaceSelector: {}
+    # Tempo's metrics generator (service graph, span metrics) pushes here with remote write.
+    enableRemoteWriteReceiver: true
+    # The OTel Collector pushes application metrics to /api/v1/otlp/v1/metrics.
+    enableOTLPReceiver: true
+    otlp:
+      # Copied onto every series as labels, so metrics can be filtered like logs and traces are.
+      promoteResourceAttributes:
+        - k8s.namespace.name
+        - k8s.pod.name
+        - k8s.deployment.name
+    # Keeps the trace ID attached to histogram samples, so a latency panel links to its traces.
+    enableFeatures: [exemplar-storage]
+    resources:
+      requests: {cpu: 200m, memory: 512Mi}
+      limits: {cpu: 500m, memory: 768Mi}
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests: {storage: 2Gi}
+
+grafana:
+  enabled: true
+  defaultDashboardsEnabled: true
+  persistence:
+    enabled: false  # everything is provisioned from these values, so there's nothing to keep
+  resources:
+    requests: {cpu: 100m, memory: 150Mi}
+    limits: {cpu: 200m, memory: 640Mi}
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts: [grafana.localhost]
+    path: /
+  sidecar:
+    datasources:
+      # Exemplars on Prometheus panels open the trace in Tempo.
+      exemplarTraceIdDestinations:
+        datasourceUid: tempo
+        traceIdLabelName: trace_id
+  additionalDataSources:
+    - name: Loki
+      uid: loki
+      type: loki
+      url: http://loki.observability:3100
+      jsonData:
+        # A trace ID in a log line (or in the OTLP trace_id field) links to the trace in Tempo.
+        derivedFields:
+          - name: trace_id
+            matcherType: label
+            matcherRegex: trace_id
+            datasourceUid: tempo
+            url: "$${__value.raw}"
+            urlDisplayLabel: View trace
+          - name: trace_id (in line)
+            matcherRegex: '"?trace_?[iI]d"?[=:]\s*"?(\w+)'
+            datasourceUid: tempo
+            url: "$${__value.raw}"
+            urlDisplayLabel: View trace
+    - name: Tempo
+      uid: tempo
+      type: tempo
+      url: http://tempo.observability:3200
+      jsonData:
+        # From a span, jump to the same service's logs around that time. Not filtered by trace ID:
+        # that adds a line filter, and OTLP logs keep trace_id in structured metadata, not the line.
+        tracesToLogsV2:
+          datasourceUid: loki
+          spanStartTimeShift: -5m
+          spanEndTimeShift: 5m
+          tags:
+            - {key: service.name, value: service_name}
+            - {key: k8s.namespace.name, value: k8s_namespace_name}
+        # From a span, jump to its service's request rate and latency.
+        tracesToMetrics:
+          datasourceUid: prometheus
+          spanStartTimeShift: -5m
+          spanEndTimeShift: 5m
+          tags:
+            - {key: service.name, value: service}
+          queries:
+            - name: Request rate
+              query: sum(rate(traces_spanmetrics_calls_total{$$__tags}[5m]))
+            - name: p99 latency
+              query: histogram_quantile(0.99, sum by (le) (rate(traces_spanmetrics_latency_bucket{$$__tags}[5m])))
+        serviceMap:
+          datasourceUid: prometheus
+        nodeGraph:
+          enabled: true
+        lokiSearch:
+          datasourceUid: loki

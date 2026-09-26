@@ -1,8 +1,10 @@
+import logging
 from decimal import Decimal
 
 import psycopg
 import pytest
 from confluent_kafka import KafkaError
+from opentelemetry.trace import StatusCode
 
 from order_service import PositionUpdater, Side, Status
 from order_service import updater as updater_module
@@ -29,17 +31,29 @@ class TestHandle:
 
         assert updater.handle(tick_bytes(later(1), best_ask=None)) == (0, 0)
 
-    def test_logs_openings(self, updater, make_position, later, capsys):
+    def test_logs_openings(self, updater, make_position, later, caplog):
+        caplog.set_level(logging.INFO)
         make_position(side=Side.SELL)
 
         updater.handle(tick_bytes(later(1)))
 
-        assert f"Opened 1 position(s) in {CALL} at bid=5121.0 ask=5177.0" in capsys.readouterr().out
+        [record] = caplog.records
+        assert f"Opened 1 position(s) in {CALL} at bid=5121.0 ask=5177.0" == record.getMessage()
+        assert (record.event, record.symbol, record.opened) == ("positions_opened", CALL, 1)
 
-    def test_quiet_when_nothing_opens(self, updater, later, capsys):
+    def test_quiet_when_nothing_opens(self, updater, later, caplog):
+        caplog.set_level(logging.INFO)
         updater.handle(tick_bytes(later(1)))
 
-        assert capsys.readouterr().out == ""
+        assert caplog.records == []
+
+    def test_records_tick_age(self, updater, later, metric_points):
+        before = metric_points().get("position_updater_tick_age", [({}, 0)])[0][1]
+
+        updater.handle(tick_bytes(later(-3)))
+
+        [(_, count)] = metric_points()["position_updater_tick_age"]
+        assert count == before + 1
 
     @pytest.mark.parametrize("value", [
         pytest.param(b"not json", id="not-json"),
@@ -74,30 +88,50 @@ class TestRun:
         p = store.get(p.id)
         assert p.status == Status.OPEN and p.current_price == Decimal("5121.0")
 
-    def test_bad_message_is_skipped_and_loop_continues(self, run, store, make_position, later, capsys):
+    def test_bad_message_is_skipped_and_loop_continues(self, run, store, make_position, later, caplog):
         p = make_position()
 
         run([FakeMessage(b"garbage", offset=7), FakeMessage(tick_bytes(later(1)))])
 
-        assert "Skipping bad message at market-data.ticker[0]@7" in capsys.readouterr().out
+        assert "Skipping bad message at market-data.ticker[0]@7" in caplog.text
         assert store.get(p.id).status == Status.OPEN
 
-    def test_partition_eof_is_silent_other_errors_are_logged(self, run, capsys):
+    def test_partition_eof_is_silent_other_errors_are_logged(self, run, caplog):
         run([FakeMessage.eof(), FakeMessage(error=FakeKafkaError(KafkaError._TRANSPORT, "broker down"))])
 
-        out = capsys.readouterr().out
-        assert "EOF" not in out
-        assert "Kafka error: broker down" in out
+        assert "EOF" not in caplog.text
+        assert "Kafka error: broker down" in caplog.text
 
-    def test_postgres_outage_is_logged_not_raised(self, run, later, capsys):
+    def test_postgres_outage_is_logged_not_raised(self, run, later, caplog, tracing):
         class DownStore:
             def apply_tick(self, *args, **kwargs):
                 raise psycopg.OperationalError("connection refused")
 
         consumer = run([FakeMessage(tick_bytes(later(1)), key=CALL.encode())], store_=DownStore())
 
-        assert f"Failed to apply tick for b'{CALL}'" in capsys.readouterr().out
+        assert f"Failed to apply tick for b'{CALL}'" in caplog.text
+        assert caplog.records[-1].reason == "postgres_unavailable"
         assert consumer.closed
+        [span] = tracing.spans()
+        assert span.status.status_code == StatusCode.ERROR
+
+    def test_processing_continues_the_producers_trace(self, run, store, later, tracing):
+        trace_id, parent_id = "0af7651916cd43dd8448eb211c80319c", "b7ad6b7169203331"
+        headers = [("traceparent", f"00-{trace_id}-{parent_id}-01".encode())]
+
+        run([FakeMessage(tick_bytes(later(1)), offset=3, headers=headers)])
+
+        [span] = tracing.spans()
+        assert span.name == "market-data.ticker process"
+        assert format(span.context.trace_id, "032x") == trace_id
+        assert format(span.parent.span_id, "016x") == parent_id
+        assert span.attributes["messaging.kafka.offset"] == 3
+
+    def test_message_without_headers_starts_its_own_trace(self, run, store, later, tracing):
+        run([FakeMessage(tick_bytes(later(1)))])
+
+        [span] = tracing.spans()
+        assert span.parent is None
 
     def test_consumer_is_closed_even_if_handling_crashes(self, later):
         class BrokenStore:

@@ -7,6 +7,7 @@ Kafka tick after that, and current_price from every tick after the entry.
 Handlers are plain `def`: the store and the market-data client are blocking, so FastAPI runs
 each request in its threadpool.
 """
+import logging
 from typing import Annotated, Optional
 
 import psycopg
@@ -14,6 +15,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request, status
 from fastapi.responses import JSONResponse
 
+from order_service import telemetry
 from order_service.config import API_HOST, API_PORT
 from order_service.market_data import MarketDataError, SymbolsClient
 from order_service.schemas import (
@@ -25,6 +27,11 @@ from order_service.schemas import (
     PositionResponse,
 )
 from order_service.store import PositionStore
+from order_service.telemetry import meter
+
+log = logging.getLogger(__name__)
+
+positions_created = meter.create_counter("positions_created", description="Positions created, by side")
 
 NOT_FOUND = {status.HTTP_404_NOT_FOUND: {"model": ErrorResponse, "description": "No such position"}}
 POSTGRES_DOWN = {status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ErrorResponse, "description": "Postgres unavailable"}}
@@ -64,6 +71,7 @@ def create_app(
     @app.exception_handler(psycopg.OperationalError)
     def postgres_unavailable(request: Request, exc: psycopg.OperationalError) -> JSONResponse:
         body = ErrorResponse(detail=f"Postgres unavailable: {exc}")
+        log.error(body.detail, extra={"event": "postgres_unavailable", "path": request.url.path})
         return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=body.model_dump())
 
     @app.get("/health", response_model=HealthResponse)
@@ -93,10 +101,16 @@ def create_app(
                 before_commit=lambda p: symbols.subscribe(p.symbol),
             )
         except MarketDataError as e:
+            log.warning(f"Position not created: {e}", extra={
+                "event": "position_rejected", "symbol": body.symbol, "reason": "market_data_unavailable"})
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY,
                 f"Couldn't subscribe {body.symbol} in market-data-service, so no position was created: {e}",
             ) from e
+        positions_created.add(1, {"side": position.side.value})
+        log.info(f"Created position {position.id}", extra={
+            "event": "position_created", "position_id": position.id, "symbol": position.symbol,
+            "side": position.side.value, "qty": position.qty})
         return PositionResponse.model_validate(position)
 
     @app.get("/positions", response_model=PositionListResponse)
@@ -117,6 +131,7 @@ def create_app(
         """Removes the position. Its symbol stays subscribed in market-data-service."""
         if not store.delete(position_id):
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Position {position_id} not found")
+        log.info(f"Deleted position {position_id}", extra={"event": "position_deleted", "position_id": position_id})
 
     return app
 
@@ -124,8 +139,23 @@ def create_app(
 app = create_app()
 
 
+def instrument(app: FastAPI):
+    """Traces requests, Postgres queries and calls to market-data-service. Patches the libraries
+    process-wide, so only main() calls it."""
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from opentelemetry.instrumentation.psycopg import PsycopgInstrumentor
+    PsycopgInstrumentor().instrument()
+    # Also puts `traceparent` on the call to market-data-service, so its span joins this trace.
+    HTTPXClientInstrumentor().instrument()
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="/health,/docs")
+
+
 def main():
-    uvicorn.run("order_service.api:app", host=API_HOST, port=API_PORT)
+    telemetry.setup("orders-api")
+    instrument(app)
+    # log_config=None: uvicorn's loggers go through telemetry's JSON handler.
+    uvicorn.run(app, host=API_HOST, port=API_PORT, log_config=None)
 
 
 if __name__ == "__main__":

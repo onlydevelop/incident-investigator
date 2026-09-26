@@ -18,6 +18,7 @@ Paper-trading stack for Delta Exchange options.
 | [`market-data-service/`](market-data-service/README.md) | Streams Delta tickers to Kafka and Redis; symbols API on `:8000` |
 | [`order-service/`](order-service/README.md) | Paper positions in Postgres, priced from the Kafka ticker feed; positions API on `:8001` |
 | [`deploy/k8s/`](deploy/k8s/README.md) | The whole stack on the local k3s (Rancher Desktop), with Kustomize |
+| [`deploy/observability/`](deploy/observability/README.md) | Prometheus, Grafana, Loki, Tempo and the OTel Collector on the same k3s, with Helm (`make obs-up`) |
 | [`scripts/smoke-test.sh`](scripts/smoke-test.sh) | End-to-end check of a running stack, on Compose or k3s |
 
 ## Running the stack

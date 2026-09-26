@@ -1,0 +1,49 @@
+# Tempo as one process on a local volume. Traces arrive over OTLP from the OTel Collector at
+# tempo.observability:4317 (gRPC) and :4318 (HTTP); Grafana queries it on :3200.
+tempo:
+  memBallastSizeMbs: 0  # the default (1 GB) is sized for production
+  reportingEnabled: false
+  retention: 48h
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 768Mi}
+  storage:
+    trace:
+      backend: local
+      local: {path: /var/tempo/traces}
+      wal: {path: /var/tempo/wal}
+  # The collector sends OTLP. The chart's Jaeger receivers stay (its Service template requires them),
+  # but nothing uses them.
+  receivers:
+    otlp:
+      protocols:
+        grpc: {endpoint: "0.0.0.0:4317"}
+        http: {endpoint: "0.0.0.0:4318"}
+  # Derives RED metrics and the service graph from spans and pushes them to Prometheus
+  # (traces_spanmetrics_*, traces_service_graph_*). local-blocks backs TraceQL metrics queries.
+  metricsGenerator:
+    enabled: true
+    remoteWriteUrl: http://kube-prometheus-stack-prometheus.observability:9090/api/v1/write
+    registry:
+      external_labels:
+        source: tempo
+    storage:
+      path: /var/tempo/generator/wal
+    traces_storage:
+      path: /var/tempo/generator/traces
+    processor:
+      span_metrics:
+        enable_target_info: true
+      service_graphs:
+        enable_client_server_prefix: true
+  overrides:
+    defaults:
+      metrics_generator:
+        processors: [service-graphs, span-metrics, local-blocks]
+
+persistence:
+  enabled: true
+  size: 5Gi
+
+serviceMonitor:
+  enabled: true

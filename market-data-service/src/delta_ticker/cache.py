@@ -1,9 +1,15 @@
+import logging
 from typing import Optional
 
 import redis
 
 from delta_ticker.config import CACHE_KEY_PREFIX, CACHE_TTL_SECONDS, REDIS_URL
 from delta_ticker.payload import TickerPayload
+from delta_ticker.telemetry import meter
+
+log = logging.getLogger(__name__)
+
+cache_errors = meter.create_counter("md_cache_write_errors", description="Latest-tick writes to Redis that failed")
 
 
 class TickerCache:
@@ -29,7 +35,9 @@ class TickerCache:
         try:
             self.client.set(self.key_for(payload.symbol), payload.to_json(), ex=self.ttl_seconds)
         except redis.RedisError as e:
-            print(f"Failed to cache {payload.symbol}: {e!r}")
+            cache_errors.add(1)
+            log.error(f"Failed to cache {payload.symbol}: {e!r}",
+                      extra={"event": "cache_write_failed", "symbol": payload.symbol})
 
     def get(self, symbol: str) -> Optional[bytes]:
         """Latest payload JSON for `symbol`, or None if nothing arrived within the TTL."""

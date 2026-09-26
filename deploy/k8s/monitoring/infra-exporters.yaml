@@ -1,0 +1,15 @@
+# Scrapes the `metrics` port of the Postgres, Redis and Kafka exporters. The apps push their own
+# metrics over OTLP instead, so they aren't here.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: infra-exporters
+spec:
+  selector:
+    matchExpressions:
+      - {key: app, operator: In, values: [postgres, redis, kafka-exporter]}
+  # job="postgres" / "redis" / "kafka-exporter", from the pod's app label.
+  jobLabel: app
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 15s

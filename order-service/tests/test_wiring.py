@@ -1,4 +1,5 @@
 """Construction and entry points: from_url, lazy dependencies, main()."""
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
@@ -33,6 +34,30 @@ def test_from_url_opens_pool_in_ist_and_applies_schema(monkeypatch, schema):
     finally:
         store.close()
     assert store.pool.closed
+
+
+def test_from_url_closes_its_pool_if_postgres_is_unreachable(monkeypatch):
+    pools = []
+
+    class FakePool:
+        def __init__(self, url, **kwargs):
+            self.closed = False
+            pools.append(self)
+
+        def close(self):
+            self.closed = True
+
+    def unreachable(self):
+        raise psycopg.OperationalError("couldn't get a connection after 5.00 sec")
+
+    monkeypatch.setattr(store_module, "ConnectionPool", FakePool)
+    monkeypatch.setattr(PositionStore, "create_schema", unreachable)
+
+    with pytest.raises(psycopg.OperationalError):
+        PositionStore.from_url("postgresql://nowhere/db")
+
+    assert [p.closed for p in pools] == [True]
+    assert pools[0] not in store_module._pools
 
 
 def test_symbols_client_defaults_to_configured_url():
@@ -70,10 +95,16 @@ def test_app_creates_its_dependencies_lazily_and_once(monkeypatch, store):
     assert symbols.subscribed == [CALL, CALL]
 
 
-def test_api_main_runs_uvicorn(monkeypatch):
+def test_api_main_sets_up_telemetry_and_runs_uvicorn(monkeypatch):
     calls = []
-    monkeypatch.setattr(api_module.uvicorn, "run", lambda app, **kwargs: calls.append((app, kwargs)))
+    monkeypatch.setattr(api_module.telemetry, "setup", lambda service: calls.append(("setup", service)))
+    monkeypatch.setattr(api_module, "instrument", lambda app: calls.append(("instrument", app)))
+    monkeypatch.setattr(api_module.uvicorn, "run", lambda app, **kwargs: calls.append(("run", app, kwargs)))
 
     api_module.main()
 
-    assert calls == [("order_service.api:app", {"host": "0.0.0.0", "port": 8001})]
+    assert calls == [
+        ("setup", "orders-api"),
+        ("instrument", api_module.app),
+        ("run", api_module.app, {"host": "0.0.0.0", "port": 8001, "log_config": None}),
+    ]

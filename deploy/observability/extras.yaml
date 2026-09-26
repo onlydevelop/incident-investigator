@@ -1,0 +1,44 @@
+# What the charts don't provide. Applied by `make extras`.
+
+# Loki and Tempo's query APIs through Traefik, like Grafana and Prometheus (whose ingresses come from
+# their chart). No auth: this is for the local cluster only.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: observability-apis
+  namespace: observability
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: loki.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: loki, port: {number: 3100}}
+    - host: tempo.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: tempo, port: {number: 3200}}
+---
+# Loki's own metrics (ingestion rate, request latency). The chart has no ServiceMonitor, and the
+# headless and memberlist Services are left out so each pod is scraped once.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: loki
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: loki
+    matchExpressions:
+      - {key: variant, operator: DoesNotExist}
+      - {key: app.kubernetes.io/part-of, operator: DoesNotExist}
+  endpoints:
+    - port: http-metrics
+      interval: 15s

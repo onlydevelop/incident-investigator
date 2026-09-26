@@ -1,13 +1,34 @@
 from datetime import datetime
 from decimal import Decimal
 from importlib.resources import files
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
+from opentelemetry.metrics import CallbackOptions, Observation
 from psycopg.rows import class_row
 from psycopg_pool import ConnectionPool
 
 from order_service.config import DATABASE_TIMEOUT_SECONDS, DATABASE_TIMEZONE, DATABASE_URL
 from order_service.models import Position, Side, Status
+from order_service.telemetry import meter
+
+# The pools PositionStore.from_url() opened in this process (one, in the API and in the updater).
+_pools: list[ConnectionPool] = []
+
+
+def _pool_gauge(stat: Callable[[dict], int]):
+    def observe(options: CallbackOptions) -> Iterable[Observation]:
+        return [Observation(stat(pool.get_stats())) for pool in _pools]
+    return observe
+
+
+meter.create_observable_gauge("db_pool_size", callbacks=[_pool_gauge(lambda s: s["pool_size"])],
+                              description="Postgres connections the pool holds")
+meter.create_observable_gauge("db_pool_in_use", callbacks=[_pool_gauge(lambda s: s["pool_size"] - s["pool_available"])],
+                              description="Postgres connections checked out of the pool")
+meter.create_observable_gauge("db_pool_max", callbacks=[_pool_gauge(lambda s: s["pool_max"])],
+                              description="The pool's max_size")
+meter.create_observable_gauge("db_pool_requests_waiting", callbacks=[_pool_gauge(lambda s: s["requests_waiting"])],
+                              description="Callers waiting for a free connection")
 
 COLUMNS = "id, time, symbol, side, qty, status, entry_price, entry_time, current_price, current_price_time"
 
@@ -56,7 +77,15 @@ class PositionStore:
             open=True,
         )
         store = cls(pool)
-        store.create_schema()
+        try:
+            store.create_schema()
+        except BaseException:
+            # Otherwise the pool keeps reconnecting in the background. The API builds its store on
+            # the first request, so while Postgres is down every probe would leak one more pool,
+            # and all of them connect at once when it comes back.
+            pool.close()
+            raise
+        _pools.append(pool)
         return store
 
     def create_schema(self):

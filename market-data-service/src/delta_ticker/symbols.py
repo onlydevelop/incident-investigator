@@ -1,9 +1,12 @@
+import logging
 import threading
 from typing import Callable, Optional
 
 import redis
 
 from delta_ticker.config import REDIS_URL, SYMBOL_REFRESH_SECONDS, SYMBOLS_KEY
+
+log = logging.getLogger(__name__)
 
 
 class SymbolRegistry:
@@ -27,7 +30,7 @@ class SymbolRegistry:
         try:
             return self.members()
         except redis.RedisError as e:
-            print(f"Failed to read symbols from {self.KEY}: {e!r}")
+            log.error(f"Failed to read symbols from {self.KEY}: {e!r}", extra={"event": "symbols_read_failed"})
             return None
 
     def members(self) -> list[str]:

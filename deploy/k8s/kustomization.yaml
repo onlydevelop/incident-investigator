@@ -16,6 +16,7 @@ resources:
   - infra/kafka.yaml
   - infra/kafka-topics-job.yaml
   - infra/postgres.yaml
+  - infra/kafka-exporter.yaml
   - market-data/delta-ticker.yaml
   - market-data/symbols-api.yaml
   - order-service/orders-api.yaml
@@ -37,3 +38,9 @@ configMapGenerator:
       - REDIS_URL=redis://redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - MARKET_DATA_URL=http://symbols-api:8000
+      # Traces and metrics go to the OTel Collector from ../observability (logs are read from
+      # stdout). Without that stack the SDK logs export errors and the apps carry on.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.observability:4318
+      - OTEL_METRIC_EXPORT_INTERVAL=15000
+      # HTTP metrics as http_server_request_duration_seconds (stable semconv), not the old ms histogram.
+      - OTEL_SEMCONV_STABILITY_OPT_IN=http

@@ -1,0 +1,15 @@
+# Prometheus scrape config for the infra exporters. Separate from ../kustomization.yaml because the
+# PodMonitor kind only exists once ../../observability is installed; `make apply` applies this
+# only when it is.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: incident-investigator
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: portfolio
+    includeSelectors: false
+
+resources:
+  - infra-exporters.yaml

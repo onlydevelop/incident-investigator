@@ -5,16 +5,33 @@ tick are opened at their entry price (ask for a buy, bid for a sell), and open p
 new current_price (bid for a buy, ask for a sell).
 """
 import json
+import logging
 import signal
+import time
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
 import psycopg
-from confluent_kafka import Consumer, KafkaError
+from confluent_kafka import Consumer, KafkaError, Message
+from opentelemetry import propagate, trace
 
+from order_service import telemetry
 from order_service.config import CONSUMER_GROUP, KAFKA_BOOTSTRAP_SERVERS, TICKER_TOPIC
 from order_service.store import PositionStore
+from order_service.telemetry import meter, tracer
+
+log = logging.getLogger(__name__)
+
+ticks = meter.create_counter(
+    "position_updater_ticks", description="Ticks consumed, by result (applied, bad_message, db_error)"
+)
+positions_opened = meter.create_counter("positions_opened", description="Pending positions opened by a tick")
+tick_age = meter.create_histogram(
+    "position_updater_tick_age", unit="s",
+    description="Exchange timestamp to processing here: how stale prices are when positions see them",
+    explicit_bucket_boundaries_advisory=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60],
+)
 
 
 def _to_decimal(value) -> Optional[Decimal]:
@@ -38,27 +55,68 @@ class PositionUpdater:
             # A new group starts from live prices; after a restart it resumes from its committed offset.
             # Replayed ticks are harmless: apply_tick ignores anything older than a position's prices.
             "auto.offset.reset": "latest",
+            # librdkafka's own messages (broker unreachable, rebalances) as JSON log lines, not raw stderr.
+            "logger": logging.getLogger("librdkafka"),
         })
 
     def handle(self, value: bytes) -> tuple[int, int]:
         """Applies one ticker payload (market-data-service's TickerPayload JSON); returns (opened, updated)."""
         tick = json.loads(value)
         symbol = tick["symbol"]
+        tick_time = datetime.fromisoformat(tick["time"])
         opened, updated = self.store.apply_tick(
             symbol,
-            datetime.fromisoformat(tick["time"]),
+            tick_time,
             bid=_to_decimal(tick.get("best_bid")),
             ask=_to_decimal(tick.get("best_ask")),
         )
+        # Clamped: a histogram can't take negative values, which clock skew between the exchange and
+        # this node would produce.
+        tick_age.record(max(0.0, time.time() - tick_time.timestamp()))
         if opened:
-            print(f"Opened {opened} position(s) in {symbol} at bid={tick.get('best_bid')} ask={tick.get('best_ask')}")
+            positions_opened.add(opened)
+            log.info(f"Opened {opened} position(s) in {symbol} at bid={tick.get('best_bid')} ask={tick.get('best_ask')}",
+                     extra={"event": "positions_opened", "symbol": symbol, "opened": opened,
+                            "bid": tick.get("best_bid"), "ask": tick.get("best_ask")})
         return opened, updated
+
+    def process(self, msg: Message):
+        """Handles one message in a span that continues the tick's trace from its `traceparent`
+        header, so the delta-ticker's publish and this processing are one trace in Tempo."""
+        parent = propagate.extract({k: v.decode() for k, v in msg.headers() or [] if v is not None})
+        attributes = {
+            "messaging.system": "kafka",
+            "messaging.operation.type": "process",
+            "messaging.destination.name": msg.topic(),
+            "messaging.consumer.group.name": CONSUMER_GROUP,
+            "messaging.destination.partition.id": str(msg.partition()),
+            "messaging.kafka.offset": msg.offset(),
+        }
+        with tracer.start_as_current_span(f"{msg.topic()} process", context=parent, kind=trace.SpanKind.CONSUMER,
+                                          attributes=attributes) as span:
+            try:
+                self.handle(msg.value())
+                ticks.add(1, {"result": "applied"})
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+                ticks.add(1, {"result": "bad_message"})
+                span.set_status(trace.StatusCode.ERROR, "bad message")
+                log.warning(f"Skipping bad message at {msg.topic()}[{msg.partition()}]@{msg.offset()}: {e!r}",
+                            extra={"event": "bad_message", "partition": msg.partition(), "offset": msg.offset()})
+            except psycopg.OperationalError as e:
+                # Postgres is down; this tick is lost, and the next one for the symbol catches up.
+                ticks.add(1, {"result": "db_error"})
+                span.record_exception(e)
+                span.set_status(trace.StatusCode.ERROR, "postgres unavailable")
+                key = msg.key().decode() if msg.key() else None
+                log.error(f"Failed to apply tick for {msg.key()!r}: {e!r}",
+                          extra={"event": "tick_failed", "symbol": key, "reason": "postgres_unavailable"})
 
     def run(self):
         """Consumes until stop() is called."""
         self.consumer = self.consumer or self.new_consumer()
         self.consumer.subscribe([self.topic])
-        print(f"Consuming {self.topic} as {CONSUMER_GROUP}")
+        log.info(f"Consuming {self.topic} as {CONSUMER_GROUP}",
+                 extra={"event": "startup", "topic": self.topic, "consumer_group": CONSUMER_GROUP})
         self._running = True
         try:
             while self._running:
@@ -68,15 +126,9 @@ class PositionUpdater:
                 if msg.error():
                     # Partition EOF and transient broker errors are informational; the client retries.
                     if msg.error().code() != KafkaError._PARTITION_EOF:
-                        print(f"Kafka error: {msg.error()}")
+                        log.warning(f"Kafka error: {msg.error()}", extra={"event": "kafka_error"})
                     continue
-                try:
-                    self.handle(msg.value())
-                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
-                    print(f"Skipping bad message at {msg.topic()}[{msg.partition()}]@{msg.offset()}: {e!r}")
-                except psycopg.OperationalError as e:
-                    # Postgres is down; this tick is lost, and the next one for the symbol catches up.
-                    print(f"Failed to apply tick for {msg.key()!r}: {e!r}")
+                self.process(msg)
         finally:
             # Commits final offsets and leaves the group, so a restart rebalances straight away.
             self.consumer.close()
@@ -86,6 +138,9 @@ class PositionUpdater:
 
 
 def main():
+    telemetry.setup("position-updater")
+    from opentelemetry.instrumentation.psycopg import PsycopgInstrumentor
+    PsycopgInstrumentor().instrument()
     store = PositionStore.from_url()
     updater = PositionUpdater(store)
     signal.signal(signal.SIGTERM, lambda *_: updater.stop())

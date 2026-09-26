@@ -1,0 +1,42 @@
+# Consumer group lag (kafka_consumergroup_lag), topic and partition offsets, broker count. A separate
+# Deployment rather than a sidecar: it's a Kafka client, and the broker's pod has no room for it
+# under the JVM's memory limit. Scraped by the PodMonitor in ../monitoring.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-exporter
+  template:
+    metadata:
+      labels:
+        app: kafka-exporter
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: kafka-exporter
+          image: danielqsj/kafka-exporter:v1.10.0
+          args:
+            - --kafka.server=kafka:9092
+            # The protocol version to speak; Kafka 4 dropped the old ones the default would use.
+            - --kafka.version=3.9.0
+          ports:
+            - name: metrics
+              containerPort: 9308
+          readinessProbe:
+            httpGet: {path: /healthz, port: metrics}
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {memory: 64Mi}

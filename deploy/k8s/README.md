@@ -83,15 +83,17 @@ $ curl http://market-data.localhost/health
 {"status":"ok"}
 ```
 
-On a fresh deploy the ticker has no symbols yet, so it waits:
+On a fresh deploy the ticker has no symbols yet, so it waits. The apps log one JSON object per line (see [Observability](#observability)):
 
 ```sh
 $ make -C deploy/k8s logs APP=delta-ticker
-Loaded symbols from ticker:symbols: []
-Publishing to Kafka topic market-data.ticker
-Socket opened
-No symbols configured yet; waiting for the next refresh
+{"time": "...", "level": "info", "service": "delta-ticker", "event": "symbols_loaded", "message": "Loaded symbols from ticker:symbols: []", "symbols": []}
+{"time": "...", "level": "info", "service": "delta-ticker", "event": "startup", "message": "Publishing to Kafka topic market-data.ticker", ...}
+{"time": "...", "level": "info", "service": "delta-ticker", "event": "ws_open", "message": "Socket opened"}
+{"time": "...", "level": "info", "service": "delta-ticker", "event": "no_symbols", "message": "No symbols configured yet; waiting for the next refresh"}
 ```
+
+To read only the messages, pipe through `jq -rR 'fromjson? | .message'`.
 
 That's expected. Creating a position subscribes its symbol, as the next step shows.
 
@@ -142,16 +144,17 @@ The ticker picks up new symbols on its next refresh, within 30 seconds:
 
 ```sh
 $ make -C deploy/k8s logs APP=delta-ticker
-Symbols changed: +['C-BTC-80000-091026', 'P-BTC-80000-091026'] -[]
-{"symbol":"C-BTC-80000-091026","product_id":153512,"strike_price":80000.0,"time":"2026-09-25T17:03:11.147256+05:30",...}
+{"time": "...", "level": "info", "service": "delta-ticker", "event": "symbols_changed", "message": "Symbols changed: +['C-BTC-80000-091026', 'P-BTC-80000-091026'] -[]", ...}
 ```
+
+Ticks themselves aren't logged: `md_ticks_received_total` and `md_tick_age_seconds` in Prometheus track them. Set `LOG_LEVEL=DEBUG` on the deployment to log every tick's payload.
 
 The first tick after a position was created opens it:
 - a **buy** enters at the **ask**;
 - a **sell** enters at the **bid**.
 
 ```sh
-$ make -C deploy/k8s logs APP=position-updater
+$ make -C deploy/k8s logs APP=position-updater | jq -rR 'fromjson? | .message'
 Consuming market-data.ticker as order-service.position-updater
 Opened 1 position(s) in C-BTC-80000-091026 at bid=5543.0 ask=5609.0
 Opened 1 position(s) in P-BTC-80000-091026 at bid=596.0 ask=608.0
@@ -247,17 +250,79 @@ This deletes the namespace's Postgres, Redis and Kafka volumes, so it can't be u
 
 | Workload | Kind | Notes |
 |---|---|---|
-| `redis`, `postgres`, `kafka` | StatefulSet, 1 replica | Each has a PVC on the `local-path` storage class (1, 2 and 2 GiB), so data survives restarts and redeploys. Kafka is single-node KRaft with a 512 MB heap |
+| `redis`, `postgres`, `kafka` | StatefulSet, 1 replica | Each has a PVC on the `local-path` storage class (1, 2 and 2 GiB), so data survives restarts and redeploys. Kafka is single-node KRaft with a 512 MB heap. Redis and Postgres each have a Prometheus exporter as a sidecar |
+| `kafka-exporter` | Deployment | Consumer lag and topic offsets for Prometheus |
 | `kafka-topics` | Job | Waits for Kafka, then creates `market-data.ticker` (3 partitions) if it's missing. It deletes itself 5 minutes after finishing, so the next `apply` runs it again |
 | `delta-ticker` | Deployment, 1 replica, `Recreate` | Only one may run, or every tick would be published twice |
 | `symbols-api` | Deployment + Service `:8000` | Ready once Redis answers (`/health`) |
 | `orders-api` | Deployment + Service `:8001` | Ready once Postgres answers (`/health`) |
 | `position-updater` | Deployment | An init container waits for Postgres, because the updater creates the schema on startup |
 | `portfolio` | Ingress (Traefik) | `orders.localhost` goes to `orders-api`, `market-data.localhost` to `symbols-api` |
+| `infra-exporters` | PodMonitor, from [`monitoring/`](monitoring) | Only applied when the [observability stack](../observability/README.md) is installed, since the PodMonitor kind comes with it |
 
 Services keep the names used in Docker Compose (`redis`, `kafka`, `postgres`, `symbols-api`). The apps therefore get the same connection settings, from the `app-config` ConfigMap. `DATABASE_URL` is built from the `postgres-credentials` Secret. Both are generated in [`kustomization.yaml`](kustomization.yaml), and a change to either rolls the pods that use it.
 
 The credentials are for local development only (`portfolio`/`portfolio`, the same as Compose).
+
+## Observability
+
+With the [observability stack](../observability/README.md) installed (`make obs-up` from the repo root), every workload here is covered by metrics, logs and traces. Deploy this stack after it, or run `make apply` again, so the PodMonitor gets created.
+
+| Signal | How it gets there | Where to look |
+|---|---|---|
+| **App metrics** | The apps push over OTLP to the collector (`OTEL_EXPORTER_OTLP_ENDPOINT` in `app-config`) | Prometheus, `job="incident-investigator/<service>"` |
+| **Infra metrics** | `postgres-exporter`, `redis-exporter` and `kafka-exporter`, scraped by the `infra-exporters` PodMonitor | Prometheus, `job="postgres"`, `"redis"`, `"kafka-exporter"` |
+| **Logs** | Every container's stdout. The apps write JSON lines, which the collector turns into fields | Loki, `{k8s_namespace_name="incident-investigator"}` |
+| **Traces** | The apps push over OTLP | Tempo. A request or a tick is one trace across services |
+
+The apps' `service.name` is `delta-ticker`, `symbols-api`, `orders-api` or `position-updater`. Loki calls it `service_name`, and Tempo's span metrics call it `service`.
+
+### Metrics
+
+| Metric | From | What it tells you |
+|---|---|---|
+| `md_ws_connected` | delta-ticker | 1 while the Delta websocket is open |
+| `md_ticks_received_total`, `md_ticks_published_total` | delta-ticker | Ticks in from Delta; ticks Kafka acknowledged |
+| `md_kafka_produce_errors_total{reason}` | delta-ticker | `queue_full`, `produce` or `delivery` failures |
+| `md_cache_write_errors_total` | delta-ticker | Failed writes of the latest tick to Redis |
+| `md_tick_age_seconds{symbol}` | delta-ticker | Now minus the latest tick's exchange time. It keeps rising if a symbol stops updating |
+| `http_server_request_duration_seconds` | symbols-api, orders-api | Latency histogram by `http_route`, `http_request_method`, `http_response_status_code` |
+| `positions_created_total{side}` | orders-api | Positions created |
+| `db_pool_size`, `db_pool_in_use`, `db_pool_max`, `db_pool_requests_waiting` | orders-api, position-updater | The psycopg connection pool |
+| `position_updater_ticks_total{result}` | position-updater | `applied`, `bad_message` or `db_error` |
+| `positions_opened_total` | position-updater | Pending positions opened by a tick |
+| `position_updater_tick_age_seconds` | position-updater | Histogram of how old a tick's exchange time is when the updater applies it |
+| `kafka_consumergroup_lag{consumergroup,topic,partition}` | kafka-exporter | The updater's lag on `market-data.ticker` (`-1` for a partition it hasn't committed on yet) |
+| `pg_stat_activity_count{datname,state}`, `pg_settings_max_connections` | postgres-exporter | Connections by state, against the limit |
+| `redis_memory_used_bytes`, `redis_evicted_keys_total`, `redis_keyspace_hits_total` | redis-exporter | Redis memory and cache behaviour |
+| `traces_spanmetrics_*`, `traces_service_graph_*` | Tempo | Rate, errors and duration of every span, and calls between services |
+
+### Logs
+
+Each app log line is one JSON object:
+- `time`, `level`, `service`, `event` and `message` on every line.
+- The fields relevant to that event, such as `symbol`, `position_id`, `reason` and `topic`.
+- `trace_id` and `span_id` when the line was written inside a span.
+
+The collector turns these into Loki structured metadata, so you can filter without parsing:
+
+```logql
+{service_name="orders-api"} | event="position_rejected"
+{k8s_namespace_name="incident-investigator"} | detected_level=~"ERROR|WARNING"
+{service_name="position-updater"} | json | reason="postgres_unavailable"
+```
+
+In Grafana, a line's `trace_id` links to the trace in Tempo.
+
+### Traces
+
+- **Creating a position:** `POST /positions` on orders-api has three children:
+  - the Postgres INSERT;
+  - the HTTP call to symbols-api;
+  - symbols-api's handler (from `traceparent`), with the Redis SADD under it.
+- **A tick:** `v2/ticker process` on delta-ticker has the Redis SET and `market-data.ticker publish` as children. The position-updater's `market-data.ticker process` continues the same trace from the Kafka message's `traceparent` header, with the Postgres UPDATEs under it.
+
+Health and docs probes aren't traced or access-logged.
 
 ## Images
 
@@ -270,7 +335,7 @@ The tag stays `:local`, so `make deploy` runs `rollout restart` to move pods ont
 - **Every app container** runs as UID 10001 (`runAsNonRoot`), with a read-only root filesystem, no Linux capabilities, no privilege escalation and the default seccomp profile.
 - **Probes:** readiness checks each API's `/health`, which touches Redis or Postgres. Liveness checks `/docs`, so a database outage takes a pod out of the Service instead of restarting it in a loop.
 - **Every pod sets `enableServiceLinks: false`.** Kubernetes would otherwise inject variables like `KAFKA_PORT=tcp://10.43.x.x:9092`, which the Kafka image reads as broker config.
-- **Every container has requests and limits.** The whole namespace requests about 1.3 GiB of memory.
+- **Every container has requests and limits.** The whole namespace requests about 1.4 GiB of memory.
 
 ## Makefile
 
