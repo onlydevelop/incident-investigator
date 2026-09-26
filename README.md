@@ -61,6 +61,27 @@ For a start-to-finish example, see [the k3s walkthrough](deploy/k8s/README.md#wa
 
 The APIs are then at <http://localhost:8001/docs> (orders) and <http://localhost:8000/docs> (market data). Each service's README lists the rest of its `make` targets.
 
+## Observability
+
+On k3s, with the [observability stack](deploy/observability/README.md) installed (`make obs-up`), every component sends metrics to Prometheus, logs to Loki and traces to Tempo. You can explore all three in Grafana at <http://grafana.localhost>. On Docker Compose the apps still write JSON logs, but they export no metrics or traces.
+
+| Component | Metrics (Prometheus) | Logs (Loki) | Traces (Tempo) |
+|---|---|---|---|
+| **delta-ticker** | `md_ws_connected`, `md_ticks_received_total`, `md_ticks_published_total`, `md_kafka_produce_errors_total{reason}`, `md_cache_write_errors_total`, `md_tick_age_seconds{symbol}` | JSON: `symbols_changed`, `ws_open`/`ws_closed`/`ws_error`, `publish_failed`, `cache_write_failed`, librdkafka messages. Ticks only at `LOG_LEVEL=DEBUG` | `v2/ticker process` per websocket update, with the Redis `SET` and the `market-data.ticker publish` under it. The trace continues into Kafka through `traceparent` |
+| **symbols-api** | `http_server_request_duration_seconds` by route, method and status | JSON access log, without `/health` and `/docs` | One span per request, with the Redis calls under it. Continues orders-api's trace |
+| **orders-api** | `http_server_request_duration_seconds`, `positions_created_total{side}`, `db_pool_size` / `_in_use` / `_max` / `_requests_waiting` | JSON: `position_created`, `position_rejected{reason}`, `position_deleted`, `postgres_unavailable`, access log | One span per request, with the Postgres queries and the call to symbols-api under it |
+| **position-updater** | `position_updater_ticks_total{result}`, `positions_opened_total`, `position_updater_tick_age_seconds` (histogram), `db_pool_*` | JSON: `positions_opened`, `bad_message`, `tick_failed{reason}`, `kafka_error`, librdkafka messages | `market-data.ticker process` per message, continuing delta-ticker's trace, with the Postgres `UPDATE`s under it |
+| **Postgres** | postgres-exporter sidecar: `pg_stat_activity_count{state}`, `pg_settings_max_connections`, database sizes, locks | Container stdout | Client spans only, from the apps |
+| **Redis** | redis-exporter sidecar: `redis_memory_used_bytes`, `redis_evicted_keys_total`, `redis_keyspace_hits_total` / `_misses_total`, commands | Container stdout | Client spans only, from the apps |
+| **Kafka** | kafka-exporter: `kafka_consumergroup_lag{consumergroup,topic,partition}`, topic and partition offsets, broker count | Container stdout | Producer and consumer spans only, from the apps |
+| **Across services** | Tempo derives `traces_spanmetrics_*` (rate, errors and duration per span) and `traces_service_graph_*` (calls between services) | Every line gets `k8s_namespace_name`, `k8s_pod_name`, `service_name` | The service graph covers user → orders-api → symbols-api → Redis, orders-api → Postgres, and delta-ticker → Kafka → position-updater → Postgres |
+| **Observability stack** | The collector's `otelcol_*` metrics, plus Loki, Tempo, Prometheus, Grafana, kube-state-metrics and node-exporter | Container stdout | — |
+
+- **How to query:**
+  - Every app log line has `time`, `level`, `service`, `event`, `message`, and `trace_id` when it was written inside a span. The fields are also Loki structured metadata, so `{service_name="orders-api"} | event="position_rejected"` works without `| json`.
+  - App metrics carry `job="incident-investigator/<service>"`. Infra metrics carry `job="postgres"`, `"redis"` or `"kafka-exporter"`.
+- **Where the details are:** each metric is described in [deploy/k8s/README.md](deploy/k8s/README.md#observability). How it's collected is in [deploy/observability/README.md](deploy/observability/README.md).
+
 ## CI
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to `main`, every pull request, and on demand. A new push cancels the run already in progress for the same branch.
