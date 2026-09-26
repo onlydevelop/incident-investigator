@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "incident-agent"
+version = "0.1.0"
+description = "LangGraph agent that investigates incidents with the observability MCP tools and the incident-corpus retriever"
+requires-python = ">=3.11"
+dependencies = [
+    # ../rag, installed editable alongside this package (see the Makefile).
+    "incident-rag",
+    "langchain-anthropic>=1.7,<2",
+    "langchain-core>=1.6,<2",
+    "langchain-mcp-adapters>=0.3,<1",
+    "langgraph>=1.2,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=1"]
+
+[project.scripts]
+incident-agent = "incident_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+markers = [
+    "mcp: starts the installed observability-mcp server over stdio; skipped if it isn't installed",
+]

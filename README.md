@@ -20,6 +20,8 @@ Paper-trading stack for Delta Exchange options.
 | [`deploy/k8s/`](deploy/k8s/README.md) | The whole stack on the local k3s (Rancher Desktop), with Kustomize |
 | [`deploy/observability/`](deploy/observability/README.md) | Prometheus, Grafana, Loki, Tempo and the OTel Collector on the same k3s, with Helm (`make obs-up`) |
 | [`observability-mcp/`](observability-mcp/README.md) | MCP server for Prometheus queries, Loki log search and Tempo trace lookup. Registered for Claude Code in [`.mcp.json`](.mcp.json) |
+| [`rag/`](rag/README.md) | Chunking and hybrid retrieval over the [incident corpus](incident-corpus/README.md) of runbooks and postmortems |
+| [`agent/`](agent/README.md) | LangGraph agent that investigates incidents with the observability MCP tools and the RAG retriever, and writes a report |
 | [`scripts/smoke-test.sh`](scripts/smoke-test.sh) | End-to-end check of a running stack, on Compose or k3s |
 
 ## Running the stack
