@@ -4,8 +4,9 @@
     incident-agent "positions stopped updating about 20 minutes ago" --verbose
     incident-agent "ticks look stale" --rag-backend memory       # no OpenSearch needed
 
-Progress (tool calls and their results) goes to stderr, the report to stdout, so
-`incident-agent "..." > report.md` keeps just the report.
+Progress (tool calls and their results) goes to stderr, and the report to stdout as JSON
+(an `InvestigationReport`), so `incident-agent "..." > report.json` keeps just the report.
+`--markdown` renders it for reading instead.
 """
 
 import argparse
@@ -19,7 +20,7 @@ from datetime import datetime, timezone
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from incident_agent import config, prompts
-from incident_agent.graph import build_graph, create_model
+from incident_agent.graph import build_graph, create_model, outcome
 from incident_agent.knowledge import open_knowledge_base
 from incident_agent.mcp_tools import load_connection, open_mcp_tools
 from incident_rag.backends import BACKENDS
@@ -40,29 +41,31 @@ async def investigate(args: argparse.Namespace) -> int:
             )
             now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             task = HumanMessage(prompts.TASK.format(question=args.question, now=now))
-            # Two supersteps per round (agent, tools) plus the wrap-up; the budget ends it first.
+            # Two supersteps per round (agent, tools), plus the wrap-up and a repair.
             limit = 2 * args.max_tool_rounds + 10
-            report, usage, stopped_early = None, [], False
+            state, usage = {}, []
             async for update in graph.astream({"messages": [task]}, {"recursion_limit": limit},
                                               stream_mode="updates"):
                 for node, delta in update.items():
-                    stopped_early |= node == "out_of_budget"
+                    state.update({k: v for k, v in delta.items() if k != "messages"})
                     for message in delta.get("messages", []):
                         if isinstance(message, AIMessage):
                             usage.append(message.usage_metadata or {})
                             _show_ai(message, args.verbose)
-                            if not message.tool_calls:
-                                report = message.text
                         elif isinstance(message, ToolMessage):
                             _show_tool_result(message, args.verbose)
+                        elif node == "validate":
+                            _log(f"  ✗ report failed validation, asking for a corrected one: {state['report_error']}")
 
     _show_usage(usage)
-    if report is None:
-        print("The agent stopped without a report.", file=sys.stderr)
+    try:
+        report = outcome(state)
+    except RuntimeError as e:
+        _log(str(e))
         return 1
-    if stopped_early:
-        print("(Tool budget used up: the report is based on partial evidence.)", file=sys.stderr)
-    print(report)
+    if state.get("out_of_budget"):
+        _log("(Tool budget used up: the report is based on partial evidence.)")
+    print(report.markdown() if args.markdown else report.model_dump_json(indent=2))
     return 0
 
 
@@ -114,6 +117,7 @@ def main() -> None:
     parser.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"], default=config.EFFORT)
     parser.add_argument("--max-tool-rounds", type=int, default=config.MAX_TOOL_ROUNDS)
     parser.add_argument("--rag-backend", choices=BACKENDS, default=config.RAG_BACKEND)
+    parser.add_argument("--markdown", action="store_true", help="print the report as Markdown instead of JSON")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="show the agent's thinking summaries, full tool arguments and results")
     args = parser.parse_args()

@@ -16,26 +16,8 @@ tool errors, read the error: a query can usually be fixed, and a backend that is
 
 Your tools are read-only. Recommend actions, but don't claim to have taken any.
 
-When you have enough evidence, reply with a report in Markdown:
-
-## Summary
-Two or three sentences: what is broken, since when, the impact, and the most likely cause.
-
-## Timeline
-UTC times of the key changes you observed.
-
-## Evidence
-Each finding with the query, log line or trace ID that shows it.
-
-## Root cause
-The cause, your confidence (high, medium or low), and what would raise it. Name the alternatives
-you ruled out and why.
-
-## Related runbooks and postmortems
-The document IDs that apply, and where this incident differs from them.
-
-## Recommended actions
-Mitigation first, then follow-ups. Commands from a runbook are fine; say which runbook.
+When you have enough evidence, stop calling tools and reply with your report. The response format
+fixes its fields (root cause, confidence, evidence, next step); follow each field's description.
 
 About this stack's telemetry:
 
@@ -54,5 +36,14 @@ The time now is {now} UTC. Relative times such as `30m` in the tools are counted
 # Sent back for each tool call that was not run, when the investigation has used its tool budget.
 OUT_OF_BUDGET = (
     "Not run: this investigation has used its tool budget. Write your report now from the evidence "
-    "you have, and list what you would still check under Root cause."
+    "you have, and say in root_cause what you would still check."
 )
+
+# Sent when the report fails validation, with the error.
+REPAIR = """\
+Your report didn't pass validation:
+
+{error}
+
+Reply again with the whole corrected report. Don't call tools.
+"""
