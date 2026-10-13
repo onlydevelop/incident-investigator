@@ -10,19 +10,146 @@
 [![order-service tests](../../raw/badges/tests-order-service.svg)](order-service/README.md)
 [![order-service coverage](../../raw/badges/coverage-order-service.svg)](order-service/README.md)
 
-Paper-trading stack for Delta Exchange options.
+**An LLM agent that investigates production incidents the way an on-call engineer does.** It reads live metrics, logs and traces, checks what the team's runbooks and past postmortems say, and writes a report with a timeline, the evidence, a root cause with a confidence level, and recommended actions.
+
+It runs against a real, fully instrumented system: a Kafka-based paper-trading stack for Delta Exchange options, deployed on Kubernetes with OpenTelemetry end to end.
+
+```sh
+make -C agent run Q="Positions don't seem to be getting fresh prices"
+```
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Architecture](#architecture)
+- [Components](#components)
+- [Results](#results)
+- [Design decisions](#design-decisions)
+- [Quick start: run an investigation](#quick-start-run-an-investigation)
+- [Running the stack](#running-the-stack)
+- [Observability](#observability)
+- [CI](#ci)
+
+## What it does
+
+When something goes wrong, most of an investigation is the same loop: check alerts, query the metrics that matter, find the error logs, follow a trace across services, and compare what you see with incidents you've had before. This project automates that loop.
+
+1. **You describe the symptom** in plain language, e.g. *"orders-api is returning 503s"*.
+2. **The agent gathers evidence** from live telemetry through an MCP server over Prometheus, Loki and Tempo.
+3. **It consults past experience:** hybrid search over a corpus of runbooks and postmortems tells it *what to check*. It adopts a documented cause only when the telemetry confirms it, because similar symptoms often have different causes.
+4. **It writes a Markdown report:** summary, timeline, evidence, root cause with confidence, related documents, and recommended actions.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    DX[Delta Exchange<br/>WebSocket] --> DT
+
+    subgraph SUT["System under investigation (k3s)"]
+        DT[delta-ticker] -->|ticks| K[(Kafka)]
+        DT --> R[(Redis)]
+        K --> PU[position-updater] --> PG[(Postgres)]
+        CL[client] --> OA[orders-api] --> SA[symbols-api] --> R
+        OA --> PG
+    end
+
+    SUT -->|OTLP| OC[OTel Collector]
+    OC --> P[Prometheus]
+    OC --> L[Loki]
+    OC --> T[Tempo]
+
+    subgraph AI["Investigation layer"]
+        A["incident-agent<br/>LangGraph + Claude"] -->|MCP over stdio| M[observability-mcp]
+        A --> RG["incident-rag<br/>hybrid search"]
+        RG --> OS[("OpenSearch<br/>BM25 + k-NN")]
+        RG --> C["incident-corpus<br/>runbooks, postmortems"]
+    end
+
+    M --> P
+    M --> L
+    M --> T
+    A --> REP[Investigation report]
+```
+
+The agent is a small LangGraph state graph:
+
+```
+START → agent ⇄ tools
+          │
+          ├─ no tool calls ───────────────────────────→ END (the report)
+          └─ over the tool budget → out_of_budget → agent → END
+```
+
+Tool calls in one turn run concurrently. After the tool budget (25 rounds by default) the pending calls are answered with "write your report now", so even a long investigation always ends with a report.
+
+## Components
+
+**Investigation layer**
 
 | Directory | What it is |
 |---|---|
+| [`agent/`](agent/README.md) | LangGraph agent (Claude) that investigates incidents with the observability MCP tools and the RAG retriever, and writes a report |
+| [`observability-mcp/`](observability-mcp/README.md) | MCP server with read-only tools for Prometheus queries, Loki log search and Tempo trace lookup. Also registered for Claude Code in [`.mcp.json`](.mcp.json) |
+| [`rag/`](rag/README.md) | Chunking, embedding and hybrid retrieval (BM25 + vectors in OpenSearch, pgvector), with evals for chunking strategies, backends and reranking |
+| [`incident-corpus/`](incident-corpus/README.md) | Runbooks and postmortems for this stack, the agent's "past experience" |
+
+**System under investigation**
+
+| Directory | What it is |
+|---|---|
+| [`market-data-service/`](market-data-service/README.md) | `delta-ticker` streams Delta tickers to Kafka and Redis; `symbols-api` on `:8000` |
+| [`order-service/`](order-service/README.md) | `orders-api` (paper positions in Postgres) on `:8001`; `position-updater` prices them from the Kafka ticker feed |
 | [`infra/`](infra/README.md) | Shared Redis, Kafka and Postgres on the `portfolio` Docker network |
-| [`market-data-service/`](market-data-service/README.md) | Streams Delta tickers to Kafka and Redis; symbols API on `:8000` |
-| [`order-service/`](order-service/README.md) | Paper positions in Postgres, priced from the Kafka ticker feed; positions API on `:8001` |
+
+**Platform**
+
+| Directory | What it is |
+|---|---|
 | [`deploy/k8s/`](deploy/k8s/README.md) | The whole stack on the local k3s (Rancher Desktop), with Kustomize |
 | [`deploy/observability/`](deploy/observability/README.md) | Prometheus, Grafana, Loki, Tempo and the OTel Collector on the same k3s, with Helm (`make obs-up`) |
-| [`observability-mcp/`](observability-mcp/README.md) | MCP server for Prometheus queries, Loki log search and Tempo trace lookup. Registered for Claude Code in [`.mcp.json`](.mcp.json) |
-| [`rag/`](rag/README.md) | Chunking and hybrid retrieval over the [incident corpus](incident-corpus/README.md) of runbooks and postmortems |
-| [`agent/`](agent/README.md) | LangGraph agent that investigates incidents with the observability MCP tools and the RAG retriever, and writes a report |
 | [`scripts/smoke-test.sh`](scripts/smoke-test.sh) | End-to-end check of a running stack, on Compose or k3s |
+
+## Results
+
+**Retrieval**, measured on a 57-question eval set written the way an on-call engineer asks, covering all 20 corpus documents. Details in [`rag/README.md`](rag/README.md).
+
+| Setup | Recall@1 | Recall@3 | MRR@10 | Latency (p50) |
+|---|---|---|---|---|
+| Vector search (pgvector / OpenSearch k-NN) | 56% | 89% | 0.73 | <1 ms |
+| BM25 | 61% | 82% | 0.73 | 4 ms |
+| **Hybrid BM25 + vector (chosen)** | **72%** | 88% | **0.81** | **6 ms** |
+| Hybrid + MiniLM cross-encoder reranker | 74% | — | 0.81 | ~1.5 s |
+
+All rows use the chosen chunking, `heading-merged+ctx`. It had the best recall at equal token budgets among 8 strategies (93% Recall@1000 tokens).
+
+**Agent cost:** a typical investigation makes about 14 model calls. Prompt caching serves about 88% of input tokens from cache, because the system prompt and tool definitions never change between calls.
+
+<!-- TODO: add end-to-end agent results here, e.g. "Correct root cause in X of N injected incidents, ~$Y and Z s per investigation", and link a sample report. -->
+
+## Design decisions
+
+- **Hybrid search, no reranker.** Hybrid search moves the right answer to rank 1 far more often than vectors alone (Recall@1 56% → 72%). BM25 catches exact identifiers like `NOT_ENOUGH_REPLICAS` or `exit code 137`; vectors catch paraphrases. A cross-encoder reranker added nothing measurable on top of hybrid at about 250× the latency, so it's left out until the corpus grows.
+- **Heading-aware chunks with a breadcrumb.** Each chunk is a section of a runbook prefixed with its path (`RB-005: PostgreSQL connection pool exhaustion > Triage`). Without the breadcrumb, heading chunks did worst of all; with it, they did best.
+- **Fetch the whole runbook when a procedure is needed.** Answers like "what's wrong and how do I fix it" span Triage and Mitigation sections that no single chunk holds, so the agent has a tool to read the full document once a chunk hits.
+- **Runbooks guide, telemetry decides.** The corpus's postmortems deliberately share symptoms with new incidents but not causes, so the prompt tells the agent to confirm any documented cause against live data. The agent's golden-set incidents are kept out of the corpus to keep evals honest.
+- **One MCP session per run.** The agent starts the MCP server once and keeps the session open, instead of starting a server process for every tool call.
+- **A bounded investigation.** A tool budget caps cost and time, and the out-of-budget node still produces a report from what was gathered.
+
+## Quick start: run an investigation
+
+```sh
+make k8s-start                        # the stack under investigation, on k3s
+make obs-up                           # Prometheus, Loki, Tempo, Grafana
+make -C observability-mcp install     # the MCP server the agent starts
+make -C rag ingest                    # the corpus in OpenSearch (or use --rag-backend memory)
+export ANTHROPIC_API_KEY=...
+
+make -C agent install
+make -C agent run Q="Positions don't seem to be getting fresh prices"
+make -C agent run Q="orders-api is returning 503s" ARGS="--verbose"
+```
+
+Progress goes to stderr and the report to stdout, so `agent/.venv/bin/incident-agent "..." > report.md` keeps only the report. [`agent/README.md`](agent/README.md) has the configuration options.
 
 ## Running the stack
 
@@ -46,7 +173,7 @@ These need `make -C deploy/k8s <target>`:
 | Command | What it does |
 |---|---|
 | `smoke` | Run the end-to-end smoke test in the cluster |
-| `logs APP=<name>` | Follow one workload's logs, e.g. `APP=position-updater` |
+| `logs APP=<n>` | Follow one workload's logs, e.g. `APP=position-updater` |
 | `diagnose` | Show pods that aren't ready, and recent warning events |
 | `delete` | Remove all workloads but keep the data volumes |
 | `delete-all` | Remove the namespace **and all its data** |
